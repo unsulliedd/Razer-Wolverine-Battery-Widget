@@ -1,0 +1,51 @@
+name: Release
+
+# Push a tag like v1.0.0 and this builds the executable and attaches it, plus
+# its SHA-256, to a GitHub release. Nobody downloading a tray utility is going
+# to run cargo, so the binary has to be the thing they get.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Test
+        working-directory: app
+        run: cargo test --release
+
+      - name: Build
+        working-directory: app
+        run: cargo build --release
+
+      - name: Checksum
+        working-directory: app
+        shell: pwsh
+        run: |
+          $exe = "target/release/WolverineBatteryWidget.exe"
+          $hash = (Get-FileHash $exe -Algorithm SHA256).Hash
+          "$hash  WolverineBatteryWidget.exe" | Out-File -Encoding ascii SHA256SUMS.txt
+          Write-Host "SHA256: $hash"
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            app/target/release/WolverineBatteryWidget.exe
+            app/SHA256SUMS.txt
+          body: |
+            Download `WolverineBatteryWidget.exe` below and run it. No installer.
+
+            Windows SmartScreen will warn that the publisher is unknown — the
+            binary is not code signed. Choose **More info → Run anyway**, or
+            verify it against `SHA256SUMS.txt` first.
+
+            Requires Windows 10 1709+ or Windows 11, 64-bit, and a Razer
+            Wolverine V3 Pro (`1532:0A3F`).
+          generate_release_notes: true

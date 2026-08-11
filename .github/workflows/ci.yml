@@ -1,0 +1,26 @@
+name: CI
+
+# Windows runners because the tests use GDI and the Win32 registry.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app
+      - name: Test
+        working-directory: app
+        run: cargo test --release
+      - name: Build
+        working-directory: app
+        run: cargo build --release
+      - name: Clippy
+        working-directory: app
+        run: cargo clippy --release --all-targets -- -D warnings

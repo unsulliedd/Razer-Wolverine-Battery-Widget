@@ -1,0 +1,53 @@
+[package]
+name = "wolverine-battery-widget"
+version = "1.0.0"
+edition = "2021"
+license = "MIT"
+description = "Battery indicator for the Razer Wolverine V3 Pro, with no Razer software"
+
+[[bin]]
+name = "WolverineBatteryWidget"
+path = "src/main.rs"
+
+[build-dependencies]
+# Build-time only: stamps the VERSIONINFO block and the .ico into the exe so
+# Explorer, Alt-Tab and the Properties dialog have something to show. Nothing
+# from this crate ends up in the binary.
+winres = "0.1"
+
+[dependencies.windows]
+version = "0.58"
+features = [
+    "implement",
+    "Foundation",
+    "Foundation_Collections",
+    "Gaming_Input",
+    "Gaming_Input_Custom",
+    "Win32_Devices_DeviceAndDriverInstallation",
+    "Win32_Foundation",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Gdi",
+    "Win32_Security",
+    "Win32_System_Com",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Registry",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+    "Win32_System_Time",
+    "Win32_System_WinRT",
+    "Win32_UI_Controls",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+]
+
+[dependencies.windows-core]
+version = "0.58"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

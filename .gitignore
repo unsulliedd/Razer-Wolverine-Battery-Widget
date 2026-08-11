@@ -1,0 +1,13 @@
+# Build output
+target/
+
+# Not published. This hides the write-ups only: protocol.rs still contains the
+# request bytes, the transaction id and the checksum, so publishing the source
+# publishes the protocol.
+RESEARCH.md
+PROTOCOL.md
+tools/
+app/README.md
+
+# Agent workspace
+.claude/
