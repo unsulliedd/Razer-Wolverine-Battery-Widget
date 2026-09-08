@@ -1,15 +1,3 @@
-//! Is the controller on the cable or on the dongle?
-//!
-//! Windows.Gaming.Input does not say. Both modes publish the same VID/PID and
-//! differ only in the PnP device instance suffix:
-//!
-//! ```text
-//! wired     USB\VID_1532&PID_0A3F\00002E56EDF51C9C   <- the unit's serial
-//! dongle    USB\VID_1532&PID_0A3F\0000000000000001   <- placeholder
-//! ```
-//!
-//! A heuristic, not a documented contract, so anything that does not clearly
-//! match returns `Unknown`.
 
 use windows::core::PCWSTR;
 use windows::Win32::Devices::DeviceAndDriverInstallation::{

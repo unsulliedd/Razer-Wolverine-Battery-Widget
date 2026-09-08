@@ -1,13 +1,7 @@
-//! The Razer vendor report as it appears on this device's GIP transport.
-//!
-//! Every constant here was observed on the wire. The tests at the bottom run
-//! against real captured frames.
 
 /// 60 bytes on this device; Razer's desktop peripherals use 90.
 pub const REPORT_LEN: usize = 60;
 
-/// The transport builds and strips the 4-byte GIP header itself, so these only
-/// identify a message rather than frame one.
 pub const GIP_REQUEST_ID: u8 = 0x0F;
 pub const GIP_REPLY_ID: u8 = 0x10;
 
@@ -52,14 +46,10 @@ pub enum PowerReply {
     Charging(bool),
 }
 
-/// Linearity at the extremes is unverified; observed values span roughly
-/// 145-237.
 pub fn percent(raw: u8) -> f32 {
     raw as f32 * 100.0 / 255.0
 }
 
-/// Parse a message arriving on the GIP input sink. Every failure path returns
-/// `None` and never a number.
 pub fn parse_reply(message_id: u8, buf: &[u8]) -> Option<PowerReply> {
     if message_id != GIP_REPLY_ID {
         return None;

@@ -28,13 +28,6 @@ use std::time::SystemTime;
 
 use crate::state::{self, Device};
 
-/// Spacing ramp, in DIP. Every margin, padding and box dimension in this file
-/// is one of these steps.
-///
-/// The ramp is built on 4 because that is what XAML itself asks for: 4 scales
-/// to a whole number of pixels at 125%, 150%, 175% and 200%, so a layout made
-/// of multiples of 4 lands on pixel boundaries at every scale factor Windows
-/// offers rather than accumulating rounding drift down the card.
 const SP_1: i32 = 4;
 const SP_2: i32 = 8;
 const SP_3: i32 = 12;
@@ -42,8 +35,6 @@ const SP_4: i32 = 16;
 const SP_5: i32 = 20;
 const SP_6: i32 = 24;
 
-/// Type ramp, in DIP. Four sizes, each with one job. Sizes are not held to the
-/// spacing grid - the boxes they sit in are, which is what carries the rhythm.
 const TX_DISPLAY: i32 = 36;
 const TX_TITLE: i32 = 15;
 const TX_BODY: i32 = 13;
@@ -55,28 +46,18 @@ const GL_SMALL: i32 = 12;
 
 pub const WIDTH_DIP: i32 = 340;
 const PAD: i32 = SP_5;
-/// Space below the last card, so the panel does not end flush against it.
 const PAD_BOTTOM: i32 = SP_2;
-/// Tall enough to hold the whole card including its footer. `dump_card_sheet`
-/// asserts this at every scale factor Windows offers.
 const CARD_DIP: i32 = 288;
 const EMPTY_DIP: i32 = 88;
 
-/// Left gutter of the plot, holding the two percentage labels.
 const CHART_GUTTER: i32 = 32;
 const CHART_H: i32 = 56;
-/// Row under the plot for the two time labels.
 const AXIS_H: i32 = SP_5;
 
-/// The card's three fixed-height rows: name over subtitle, the big percentage,
-/// and the freshness line.
 const HEAD_H: i32 = 36;
 const LEVEL_H: i32 = 44;
 const FOOT_H: i32 = SP_5;
 
-/// Windows 11 ships Segoe Fluent Icons; Windows 10 has Segoe MDL2 Assets, which
-/// carries every codepoint used here at the same position. GDI substitutes a
-/// missing family silently rather than failing, so ask which one exists.
 fn icon_font() -> PCWSTR {
     static HAS_FLUENT: OnceLock<bool> = OnceLock::new();
     let fluent = *HAS_FLUENT.get_or_init(|| unsafe {
@@ -112,9 +93,6 @@ const GLYPH_BACK: &str = "\u{E72B}";
 const GLYPH_CHECK: &str = "\u{E73E}";
 const GLYPH_INFO: &str = "\u{E946}";
 
-/// Settings is a page inside this window rather than a popup menu:
-/// `TrackPopupMenu` makes its owner foreground, and this window hides itself on
-/// deactivation, so a menu left the panel closed behind it.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Page {
     Battery,
@@ -125,7 +103,6 @@ pub const ROW_REFRESH: usize = 0;
 pub const ROW_AUTOSTART: usize = 1;
 pub const ROW_QUIT: usize = 2;
 const ROW_COUNT: usize = 3;
-/// Fluent's standard 40 epx hit target.
 const ROW_DIP: i32 = 40;
 const HEADER_DIP: i32 = 40;
 const SETTINGS_DIP: i32 = PAD + HEADER_DIP + ROW_COUNT as i32 * ROW_DIP + PAD;
@@ -146,16 +123,11 @@ pub fn set_page(p: Page) {
     HOVER.store(-1, Ordering::Relaxed);
 }
 
-/// Returns whether the highlight moved, so the caller only repaints when there
-/// is something to see.
 pub fn set_hover(row: Option<usize>) -> bool {
     let want = row.map(|r| r as i32).unwrap_or(-1);
     HOVER.swap(want, Ordering::Relaxed) != want
 }
 
-/// Footer strip of each card, in client pixels, recorded while painting. The
-/// card's layout is accumulated top-down as it draws, so measuring it a second
-/// time in a hit test would mean keeping two copies of the arithmetic in step.
 static FOOTERS: Mutex<Vec<[i32; 4]>> = Mutex::new(Vec::new());
 /// Card whose info glyph the pointer is over, or -1.
 static FOOTER_HOVER: AtomicI32 = AtomicI32::new(-1);
@@ -179,9 +151,6 @@ pub fn set_footer_hover(v: Option<i32>) -> bool {
 struct Chart {
     card: usize,
     rect: [i32; 4],
-    /// Sample x positions, ascending. The readout only ever moves from one
-    /// sample to the next, so tracking the raw pointer x instead would repaint
-    /// the panel on every mouse-move message to draw the identical picture.
     xs: Vec<i32>,
 }
 
@@ -189,9 +158,6 @@ static CHARTS: Mutex<Vec<Chart>> = Mutex::new(Vec::new());
 static CHART_HOVER: AtomicI32 = AtomicI32::new(-1);
 static CHART_HOVER_I: AtomicI32 = AtomicI32::new(0);
 
-/// Which card's plot a point is over, and the sample nearest to it. The band is
-/// grown past the plot vertically because the line spends most of its time near
-/// the top of a 56px strip.
 pub fn chart_hover_at(hwnd: HWND, x: i32, y: i32) -> Option<(i32, i32)> {
     let s = |v: i32| scale(v, dpi_for_window(hwnd));
     let charts = CHARTS.lock().ok()?;
@@ -272,16 +238,10 @@ fn level_color(p: &Palette, pct: Option<f32>, charging: bool) -> COLORREF {
     }
 }
 
-/// DIP to device pixels. Rounds to nearest rather than truncating, so a custom
-/// scale factor does not shorten every box by up to a pixel. Every hit test and
-/// every paint goes through here, so they cannot disagree.
 fn scale(v: i32, dpi: i32) -> i32 {
     (v * dpi + 48) / 96
 }
 
-/// DPI of the monitor this window is on. Not derived from `GetClientRect`: a
-/// client rect starts at (0, 0), which `MonitorFromRect` always resolves to the
-/// primary monitor.
 fn dpi_for_window(hwnd: HWND) -> i32 {
     unsafe { GetDpiForWindow(hwnd).max(96) as i32 }
 }
@@ -310,9 +270,6 @@ pub fn height_for(devices: usize, dpi: u32) -> i32 {
     }
 }
 
-/// Place the panel next to the tray icon and show it focused. Focus is what
-/// makes the process foreground, which is what un-suspends the input sink,
-/// which is what makes a read possible.
 pub fn show(hwnd: HWND, anchor: RECT) {
     let dpi = dpi_for_rect(anchor);
     let w = scale(WIDTH_DIP, dpi as i32);
@@ -416,10 +373,6 @@ fn glyph(px: i32) -> Font {
 struct Painter {
     dc: HDC,
     dpi: i32,
-    /// The top-down 32bpp pixels behind `dc`, or null. GDI antialiases nothing
-    /// but text, so shapes with curved or diagonal edges are rasterised here by
-    /// hand. Null means the DIB could not be created and the GDI path is used
-    /// instead, which costs edge quality and nothing else.
     bits: *mut u32,
     bw: i32,
     bh: i32,
@@ -430,9 +383,6 @@ impl Painter {
         scale(v, self.dpi)
     }
 
-    /// Drain the GDI batch. GDI queues drawing and only touches the bitmap when
-    /// it flushes, so writing pixels directly without this can land under paint
-    /// that was issued earlier and has not been executed yet.
     fn sync(&self) {
         if !self.bits.is_null() {
             unsafe {
@@ -535,9 +485,6 @@ impl Painter {
         }
     }
 
-    /// Rounded rectangle with antialiased corners, from the standard rounded-box
-    /// distance field. `r` is the corner radius, so a capsule is `r = height/2`
-    /// and a circle is a square box with `r = width/2`.
     fn round_fill(&self, x0: i32, y0: i32, x1: i32, y1: i32, r: i32, c: COLORREF) {
         if x1 <= x0 || y1 <= y0 {
             return;
@@ -584,10 +531,6 @@ impl Painter {
         }
     }
 
-    /// Antialiased polyline, with the segments flagged in `faint` drawn at
-    /// reduced opacity. Coverage is accumulated into a mask and blended once at
-    /// the end; blending each segment as it is drawn would double-darken every
-    /// join and read as a bead at each sample.
     fn curve(&self, pts: &[POINT], faint: &[bool], half: f32, c: COLORREF, dim: f32) {
         if pts.len() < 2 {
             return;
@@ -665,8 +608,6 @@ impl Painter {
             if b.x <= a.x {
                 continue;
             }
-            // Inclusive on the final segment, or the column the last sample
-            // lands in is the one bare stripe in the wash.
             for x in a.x..=(if b.x == last { b.x } else { b.x - 1 }) {
                 let t = (x - a.x) as f32 / (b.x - a.x) as f32;
                 let top = a.y as f32 + (b.y - a.y) as f32 * t;
@@ -682,8 +623,6 @@ impl Painter {
     }
 }
 
-/// Y-axis bounds snapped to round numbers, plus the gridline step. Never
-/// tighter than one step, so a 2% wobble does not render as a mountain range.
 fn axis_bounds(lo: f32, hi: f32) -> (f32, f32, f32) {
     let step = match hi - lo {
         d if d <= 10.0 => 5.0,
@@ -704,13 +643,6 @@ fn axis_bounds(lo: f32, hi: f32) -> (f32, f32, f32) {
     (b0, b1, step)
 }
 
-/// Wall-clock time of a past sample, as HH:MM, with a weekday prefix once it
-/// falls on an earlier day. The history window is 24 hours, so without the
-/// prefix the left end of the axis can read later than the right.
-///
-/// Derived by walking back from the current local time rather than by
-/// converting the timestamp, so no timezone database is needed. A DST change
-/// inside the window shifts a label by an hour.
 fn clock_label(at: SystemTime) -> Option<String> {
     use windows::Win32::Foundation::{FILETIME, SYSTEMTIME};
     use windows::Win32::System::SystemInformation::GetLocalTime;
@@ -731,18 +663,22 @@ fn clock_label(at: SystemTime) -> Option<String> {
         };
         let mut out = SYSTEMTIME::default();
         FileTimeToSystemTime(&back, &mut out).ok()?;
-        let same_day = out.wYear == local.wYear && out.wMonth == local.wMonth && out.wDay == local.wDay;
+        let same_day =
+            out.wYear == local.wYear && out.wMonth == local.wMonth && out.wDay == local.wDay;
         let clock = format!("{:02}:{:02}", out.wHour, out.wMinute);
-        Some(match DAYS.get(out.wDayOfWeek as usize) {
-            Some(day) if !same_day => format!("{day} {clock}"),
-            _ => clock,
+        Some(if same_day {
+            clock
+        } else if age < 7 * 24 * 60 * 60 {
+            match DAYS.get(out.wDayOfWeek as usize) {
+                Some(day) => format!("{day} {clock}"),
+                None => clock,
+            }
+        } else {
+            format!("{:02}/{:02} {clock}", out.wDay, out.wMonth)
         })
     }
 }
 
-/// A top-down 32bpp surface and a pointer to its pixels. Falls back to a
-/// compatible bitmap with a null pixel pointer, which the painter treats as
-/// "GDI only".
 unsafe fn dib(dc: HDC, w: i32, h: i32) -> (HBITMAP, *mut u32) {
     let info = BITMAPINFO {
         bmiHeader: BITMAPINFOHEADER {
@@ -826,9 +762,6 @@ fn rows_top(s: impl Fn(i32) -> i32) -> i32 {
     s(PAD) + s(HEADER_DIP)
 }
 
-/// Which settings row a point falls in. Shares its geometry with
-/// `draw_settings` through `rows_top`, so the highlight and the click can never
-/// disagree about where a row is.
 pub fn settings_row_at(hwnd: HWND, x: i32, y: i32) -> Option<usize> {
     let mut rc = RECT::default();
     unsafe {
@@ -859,8 +792,6 @@ fn draw_settings(g: &Painter, p: &Palette, cw: i32) {
         DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX,
     );
 
-    // Same rect the gear occupies on the battery page, so one hit test serves
-    // both directions of the toggle.
     g.icon(
         GLYPH_BACK,
         RECT {
@@ -909,8 +840,6 @@ fn draw_settings(g: &Painter, p: &Palette, cw: i32) {
 
 fn draw_empty(g: &Painter, p: &Palette, cw: i32, y: i32) {
     let pad = g.s(PAD);
-    // The gear's hit region is live on this page too, so it has to be visible
-    // here or settings are unreachable whenever no controller is awake.
     g.icon(
         GLYPH_GEAR,
         RECT { left: cw - pad - g.s(SP_6), top: pad, right: cw - pad + g.s(SP_1), bottom: pad + g.s(28) },
@@ -1045,7 +974,6 @@ fn draw_card(g: &Painter, p: &Palette, cw: i32, top: i32, d: &Device, index: usi
     g.round_fill(pad, y, right, y + bar_h, bar_h / 2, p.track);
     if let Some(v) = pct {
         let filled = ((right - pad) as f32 * (v / 100.0).clamp(0.0, 1.0)) as i32;
-        // Never shorter than its own cap, or the fill collapses into a wedge.
         g.round_fill(pad, y, pad + filled.max(bar_h), y + bar_h, bar_h / 2, col);
     }
     y += bar_h + g.s(SP_4);
@@ -1054,8 +982,6 @@ fn draw_card(g: &Painter, p: &Palette, cw: i32, top: i32, d: &Device, index: usi
     y = draw_history(g, p, cw, y, d, index, col) + g.s(SP_2);
 
     // ---- footer -----------------------------------------------------------
-    // The one place the panel states how old the reading is. The chart's axis
-    // gives wall-clock times and says nothing about freshness.
     let bot = y + g.s(FOOT_H);
     if let Ok(mut f) = FOOTERS.lock() {
         f.push([pad, y, right, bot]);
@@ -1071,8 +997,6 @@ fn draw_card(g: &Painter, p: &Palette, cw: i32, top: i32, d: &Device, index: usi
     g.round_fill(pad, dot_y, pad + dot, dot_y + dot, dot / 2, fresh);
 
     if FOOTER_HOVER.load(Ordering::Relaxed) == index as i32 {
-        // Right-aligned against the glyph it belongs to. Left-aligning it put
-        // the explanation at the opposite end of the card from the affordance.
         g.text(
             "Reads only while this panel is open",
             RECT { left: pad + g.s(64), top: y, right: right - g.s(SP_6), bottom: bot },
@@ -1105,9 +1029,6 @@ fn draw_card(g: &Painter, p: &Palette, cw: i32, top: i32, d: &Device, index: usi
     );
 }
 
-/// Charge rate and time-to-full, when they are computable at all. Both need
-/// three samples spanning a minute inside a 20 minute window, and samples only
-/// happen while the panel is open, so this is usually empty.
 fn rate_label(d: &Device) -> String {
     let Some(r) = d.rate_per_min().filter(|r| r.abs() >= 0.05) else {
         return String::new();
@@ -1121,8 +1042,16 @@ fn rate_label(d: &Device) -> String {
     out
 }
 
-/// The history strip: headline, plot, both axes, and the hover readout. Returns
-/// the y below everything it drew.
+fn retained_history(d: &Device, now: SystemTime) -> Vec<(f32, f32, SystemTime)> {
+    d.history
+        .iter()
+        .filter_map(|s| {
+            let age = now.duration_since(s.at).ok()?.as_secs_f32();
+            Some((age, crate::protocol::percent(s.raw), s.at))
+        })
+        .collect()
+}
+
 fn draw_history(
     g: &Painter,
     p: &Palette,
@@ -1144,26 +1073,14 @@ fn draw_history(
     let plot_l = pad + g.s(CHART_GUTTER);
     let plot_r = right;
     let below = plot_b + g.s(AXIS_H);
-    // Aligned with the plot, not with the card edge, and clear of the top
-    // gutter label that sits on the plot's own first gridline.
     let head = RECT { left: plot_l, top: y, right, bottom: y + g.s(SP_4) };
 
     let now = SystemTime::now();
-    const HISTORY_WINDOW: f32 = 24.0 * 60.0 * 60.0;
-    let recent: Vec<(f32, f32, SystemTime)> = d
-        .history
-        .iter()
-        .filter_map(|s| {
-            let age = now.duration_since(s.at).ok()?.as_secs_f32();
-            (age <= HISTORY_WINDOW).then(|| (age, crate::protocol::percent(s.raw), s.at))
-        })
-        .collect();
+    let recent = retained_history(d, now);
 
     if recent.len() < 2 || plot_r - plot_l < g.s(SP_6 * 2) {
-        // Say why it is empty rather than drawing a flat line that would look
-        // like a measured plateau.
         g.text(
-            "History builds up while this panel is open.",
+            "History appears after two readings.",
             RECT { left: pad, top: plot_t, right, bottom: below },
             TX_META,
             FW_NORMAL.0 as i32,
@@ -1182,9 +1099,6 @@ fn draw_history(
 
     let oldest = recent[0].0;
     let newest = recent[recent.len() - 1].0;
-    // Normalised across oldest -> newest sample, not oldest -> now. Anchoring
-    // the right edge to the present made the end of the line jump sideways
-    // every time a sample landed.
     let span = (oldest - newest).max(1.0);
     let (pw, ph) = ((plot_r - plot_l) as f32, (plot_b - plot_t) as f32);
     let screen: Vec<POINT> = recent
@@ -1195,9 +1109,6 @@ fn draw_history(
         })
         .collect();
 
-    // A hole in the record is not a measurement. Past a quarter of an hour, or
-    // a tenth of the window, the join between two samples is an inference and
-    // is drawn as one.
     let gap_limit = (span * 0.1).max(900.0);
     let faint: Vec<bool> = recent.windows(2).map(|w| w[0].0 - w[1].0 > gap_limit).collect();
 
@@ -1209,16 +1120,11 @@ fn draw_history(
         });
     }
 
-    // The index was resolved against the previous paint, so it is range checked
-    // rather than trusted; the next mouse move corrects it.
     let hovered = (CHART_HOVER.load(Ordering::Relaxed) == index as i32)
         .then(|| CHART_HOVER_I.load(Ordering::Relaxed) as usize)
         .filter(|i| *i < screen.len());
 
     // ---- headline ---------------------------------------------------------
-    // While the pointer is on the plot this line is the readout for the sample
-    // under it; a tooltip floating inside a 56px strip would cover the line it
-    // was describing.
     let (headline, head_col) = match hovered {
         Some(i) => {
             let (_, v, at) = recent[i];
@@ -1248,8 +1154,6 @@ fn draw_history(
         g.hline(plot_l, plot_r, gy, p.divider);
         v += step;
     }
-    // Only the two ends are labelled: at a 25 point step the rows are 14px
-    // apart and a number on each would collide with its neighbour.
     for (val, gy) in [(b1, plot_t), (b0, plot_b)] {
         g.text(
             &format!("{}", val as i32),
@@ -1277,8 +1181,6 @@ fn draw_history(
     }
 
     // ---- time axis --------------------------------------------------------
-    // Wall-clock, so the axis states when the record starts and ends without
-    // restating the reading's age, which the footer owns.
     let axis = |t: &str, l: i32, r: i32, f: DRAW_TEXT_FORMAT| {
         g.text(
             t,
@@ -1323,6 +1225,23 @@ mod tests {
         }
     }
 
+    #[test]
+    fn chart_keeps_retained_readings_older_than_a_day() {
+        let d = device(
+            Some(104),
+            60,
+            false,
+            &[(175, 2 * 24 * 60 * 60), (104, 60)],
+        );
+
+        let points = retained_history(&d, SystemTime::now());
+        assert_eq!(
+            points.len(),
+            2,
+            "the older persisted reading must remain plottable"
+        );
+    }
+
     /// The scale factors the Windows display settings slider offers.
     const SLIDER_FACTORS: [i32; 7] = [96, 120, 144, 168, 192, 216, 240];
     /// Plus the custom values Windows accepts if they are typed in.
@@ -1341,9 +1260,6 @@ mod tests {
         }
     }
 
-    /// The whole point of the 4 DIP grid: on the slider factors every step
-    /// lands on an exact pixel boundary, so nothing rounds and no drift can
-    /// accumulate down the card.
     #[test]
     fn the_ramp_needs_no_rounding_at_any_slider_factor() {
         for dpi in SLIDER_FACTORS {
@@ -1358,9 +1274,6 @@ mod tests {
         }
     }
 
-    /// At a custom factor exactness is impossible, so the weaker guarantee is
-    /// that the steps stay distinct and in order - a ramp that collapses two
-    /// steps onto the same pixel count has stopped being a ramp.
     #[test]
     fn the_ramp_stays_ordered_at_custom_factors() {
         for dpi in SLIDER_FACTORS.iter().chain(CUSTOM_FACTORS.iter()) {
@@ -1368,7 +1281,6 @@ mod tests {
                 let (a, b) = (scale(pair[0], *dpi), scale(pair[1], *dpi));
                 assert!(a < b, "{} and {} both scale to {a}px at dpi {dpi}", pair[0], pair[1]);
             }
-            // Rounding to nearest, never truncating away most of a step.
             for step in RAMP {
                 let exact = step * dpi;
                 assert!(
@@ -1379,8 +1291,6 @@ mod tests {
         }
     }
 
-    /// A card must contain its own footer at every scale factor, not just at
-    /// the one the sheet happens to be rendered at.
     #[test]
     fn the_card_holds_its_layout_at_every_scale_factor() {
         for dpi in SLIDER_FACTORS.iter().chain(CUSTOM_FACTORS.iter()).copied() {
@@ -1403,8 +1313,6 @@ mod tests {
                 "at dpi {dpi} the card needs {content}px but CARD_DIP gives {}px",
                 s(CARD_DIP)
             );
-            // The headline must not reach into the box the top gutter label
-            // sits in, which is centred on the plot's first gridline.
             let head_bottom = s(SP_4) + s(SP_4);
             let gutter_top = s(SP_4) + s(SP_4) + s(SP_2) - s(SP_2);
             assert!(
@@ -1414,7 +1322,6 @@ mod tests {
         }
     }
 
-    /// Paint into an offscreen DIB and hand back its pixels.
     fn render(w: i32, h: i32, dpi: i32, f: impl FnOnce(&Painter, &Palette)) -> Vec<u8> {
         unsafe {
             let dc = CreateCompatibleDC(None);
@@ -1438,8 +1345,6 @@ mod tests {
         }
     }
 
-    /// `target/settings.bmp`, so the settings page can be inspected without
-    /// building and running the app.
     #[test]
     fn dump_settings_sheet() {
         let dpi = 144;
@@ -1452,18 +1357,24 @@ mod tests {
         write_bmp("target/settings.bmp", &pixels, w, h);
     }
 
-    /// Render every card state offscreen and write `target/cards.bmp`. Layout
-    /// bugs do not show up in an assertion and are obvious in an image.
     #[test]
     fn dump_card_sheet() {
         let dpi = 144;
         let s = |v: i32| v * dpi / 96;
+        let mut disconnected = device(
+            Some(104),
+            13 * 60,
+            false,
+            &[
+                (226, 30 * 24 * 60 * 60),
+                (175, 2 * 24 * 60 * 60),
+                (104, 13 * 60),
+            ],
+        );
+        disconnected.connected = false;
+        disconnected.readable = false;
         let cards = [
-            // Fresh, plottable history, idle: no rate is computable, so the
-            // headline stays empty. This is the ordinary case.
             device(Some(255), 2, false, &[(250, 5400), (252, 3600), (254, 1800), (255, 30)]),
-            // Charging with dense recent samples - the uncommon case where a
-            // rate and a time-to-full exist.
             device(Some(150), 60, true, &[(120, 900), (130, 600), (140, 300), (150, 60)]),
             // Low, with a day-long record full of holes.
             device(
@@ -1472,6 +1383,9 @@ mod tests {
                 false,
                 &[(90, 82000), (85, 80000), (60, 20000), (45, 9000), (30, 3000), (20, 60)],
             ),
+            // Persisted history still renders while disconnected, including
+            // numeric dates for readings too old for a weekday label.
+            disconnected,
             // Never read.
             device(None, 0, false, &[]),
         ];
@@ -1486,8 +1400,6 @@ mod tests {
             if let Ok(mut c) = CHARTS.lock() {
                 c.clear();
             }
-            // Card 0 gets a chart hover and card 1 an info hover, so the sheet
-            // shows the readout, the marker and both footer states.
             CHART_HOVER.store(0, Ordering::Relaxed);
             CHART_HOVER_I.store(2, Ordering::Relaxed);
             let mut y = s(PAD);
@@ -1503,8 +1415,6 @@ mod tests {
             CHART_HOVER.store(-1, Ordering::Relaxed);
         });
 
-        // A card must contain its own footer. This has regressed twice, so it
-        // is an assertion rather than an eyeball.
         let footers = FOOTERS.lock().unwrap().clone();
         assert_eq!(footers.len(), cards.len());
         for (i, [_, top, _, bottom]) in footers.iter().enumerate() {

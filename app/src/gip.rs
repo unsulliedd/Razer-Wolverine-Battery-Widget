@@ -1,19 +1,3 @@
-//! The transport: Windows.Gaming.Input.Custom, from an unpackaged process.
-//!
-//! Four device facts this file depends on:
-//!
-//!   1. The process needs a window and a running message pump, or Windows
-//!      never enumerates any controller at all.
-//!   2. The object returned from CreateGameController must answer
-//!      {06E58977-7684-4DC5-BAD1-CDA52A4AA06D}, an undocumented interface that
-//!      appears in no SDK header. Refuse it and Windows silently abandons the
-//!      controller: no OnGameControllerAdded, no vendor messaging, no error.
-//!   3. SendReceiveMessage never works on this device. Use SendMessage and take
-//!      the reply asynchronously on the input sink, with message class Command;
-//!      the other two classes are accepted and silently do nothing.
-//!   4. Windows.Gaming.Input suspends the input sink whenever this process is
-//!      not foreground. SendMessage keeps returning success and the reply never
-//!      arrives.
 
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -37,16 +21,12 @@ const IID_IAGILEOBJECT: GUID = GUID::from_u128(0x94ea2b94_e9cc_49e0_c0ff_ee64ca8
 const IID_SINK: GUID = GUID::from_u128(0x1ff6f922_c640_4c78_a820_9a715c558bcb);
 const IID_GIP_SINK: GUID = GUID::from_u128(0xa2108abf_09f1_43bc_a140_80f899ec36fb);
 
-/// Undocumented; queried before anything else and fatal if refused. Slot 6 is
-/// the only method Windows ever calls.
 const IID_GAME_CONTROLLER_IMPL: GUID = GUID::from_u128(0x06e58977_7684_4dc5_bad1_cda52a4aa06d);
 
 struct SendPtr(GipGameControllerProvider);
 // WinRT controller providers are agile.
 unsafe impl Send for SendPtr {}
 
-/// Keyed by model like the state registry, so a reconnect replaces the stale
-/// provider instead of stacking a second one behind it.
 static PROVIDERS: Mutex<Vec<(u64, u16, u16, SendPtr)>> = Mutex::new(Vec::new());
 static NEXT_KEY: AtomicU64 = AtomicU64::new(1);
 
@@ -56,8 +36,6 @@ pub fn transport_ever_worked() -> bool {
     EVER_ACTIVATED.load(Ordering::SeqCst)
 }
 
-// The controller object is hand-rolled rather than #[implement]-generated: it
-// has to expose an interface windows-rs has never heard of.
 
 #[repr(C)]
 struct InspVtbl {
@@ -198,7 +176,6 @@ insp_thunks!(m_q, m_a, m_r, m_gi, m_gn, m_gt, OFF_IMPL);
 unsafe extern "system" fn on_input_resumed(this: *mut c_void, _ts: u64) -> HRESULT {
     let key = (*base_of(this, OFF_SINK)).key;
     state::set_readable(key, true);
-    // Foreground, so a read can succeed now. Do not wait for a timer.
     request_refresh();
     HRESULT(0)
 }
@@ -235,9 +212,6 @@ unsafe extern "system" fn on_message_received(
     HRESULT(0)
 }
 
-/// Slot 6 of the undocumented interface. The arguments must be left untouched:
-/// the outer object is still under construction and re-entering its
-/// QueryInterface from here faults.
 unsafe extern "system" fn initialize(_t: *mut c_void, _a: usize, _b: usize, _c: usize) -> HRESULT {
     HRESULT(0)
 }
@@ -303,7 +277,6 @@ fn new_controller(key: u64) -> IInspectable {
     unsafe { IInspectable::from_raw(obj as *mut c_void) }
 }
 
-// ---------------------------------------------------------------------------
 
 #[implement(ICustomGameControllerFactory)]
 struct Factory;
@@ -346,8 +319,6 @@ fn forget_provider(key: u64) {
     }
 }
 
-/// Ask each provider whether it is still there. Driver state, not a hardware
-/// round trip.
 pub fn reconcile_connected() {
     let list = match PROVIDERS.lock() {
         Ok(l) => l,
@@ -364,8 +335,6 @@ pub fn reconcile_connected() {
     }
 }
 
-/// Ask every connected controller for battery and charging state. The replies
-/// land on the input sink, or never, if the sink is suspended.
 pub fn request_refresh() {
     let list = match PROVIDERS.lock() {
         Ok(l) => l,

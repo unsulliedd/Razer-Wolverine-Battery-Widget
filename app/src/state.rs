@@ -1,11 +1,3 @@
-//! Shared device state.
-//!
-//! The GIP callbacks write here from whatever thread Windows uses; the UI reads
-//! a snapshot on the message-pump thread.
-//!
-//! One entry per model, keyed by (vid, pid), because Windows calls
-//! CreateGameController afresh every time the controller reappears. Two
-//! identical controllers at once is out of scope.
 
 use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::Mutex;
@@ -20,7 +12,6 @@ const MAX_HISTORY: usize = 400;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Sample {
-    /// Raw 0-255 byte off the wire, never a derived percentage.
     pub raw: u8,
     pub at: SystemTime,
 }
@@ -127,8 +118,6 @@ impl Device {
     }
 }
 
-/// Adding a controller is one line here; nothing else in the app is model
-/// specific.
 pub const KNOWN: &[(u16, u16, &str)] = &[(0x1532, 0x0A3F, "Wolverine V3 Pro")];
 
 pub fn model_name(vid: u16, pid: u16) -> &'static str {
@@ -176,8 +165,6 @@ pub fn upsert(key: u64, vid: u16, pid: u16, link: Link) {
             d.connected = true;
             d.link = link;
         } else {
-            // Seed from the last session so the tray icon shows something
-            // immediately.
             let prior = crate::store::last_known(vid, pid);
             guard.push(Device {
                 key,
@@ -274,7 +261,6 @@ pub fn persist() {
     }
 }
 
-/// The panel's only age formatter, deliberately coarse.
 pub fn describe_age(age: Duration) -> String {
     let s = age.as_secs();
     match s {

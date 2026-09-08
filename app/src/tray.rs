@@ -32,6 +32,14 @@ impl Tray {
         }
     }
 
+    pub fn is_shown(&self) -> bool {
+        self.shown
+    }
+
+    pub fn mark_lost(&mut self) {
+        self.shown = false;
+    }
+
     fn base(&self) -> NOTIFYICONDATAW {
         NOTIFYICONDATAW {
             cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
@@ -41,8 +49,6 @@ impl Tray {
         }
     }
 
-    /// Cheap to call often: the glyph is only re-rendered when something that
-    /// affects it changed.
     pub fn update(&mut self, tooltip: &str) {
         let dpi = unsafe { GetDpiForWindow(self.hwnd) }.max(96);
         let size = (16 * dpi / 96).clamp(16, 32);
@@ -85,13 +91,6 @@ impl Tray {
         }
     }
 
-    /// Add the icon, reporting whether the shell accepted it. Also used to
-    /// re-add it after the shell restarts.
-    ///
-    /// `NIM_ADD` fails while the notification area is still starting up, which
-    /// is routine when the shell launches us from the Run key at logon. The
-    /// caller has to retry: reporting success regardless is what left the
-    /// process running with no icon until the next manual launch.
     #[must_use]
     pub fn install(&mut self) -> bool {
         self.shown = false;
@@ -122,8 +121,6 @@ impl Tray {
         }
     }
 
-    /// Where the flyout anchors. Works even when the icon is in the overflow
-    /// chevron, where guessing from the taskbar position does not.
     pub fn icon_rect(&self) -> Option<RECT> {
         let id = NOTIFYICONIDENTIFIER {
             cbSize: std::mem::size_of::<NOTIFYICONIDENTIFIER>() as u32,

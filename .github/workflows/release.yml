@@ -1,8 +1,5 @@
 name: Release
 
-# Push a tag like v1.0.0 and this builds the executable and attaches it, plus
-# its SHA-256, to a GitHub release. Nobody downloading a tray utility is going
-# to run cargo, so the binary has to be the thing they get.
 on:
   push:
     tags: ["v*"]

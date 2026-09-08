@@ -10,9 +10,6 @@ name = "WolverineBatteryWidget"
 path = "src/main.rs"
 
 [build-dependencies]
-# Build-time only: stamps the VERSIONINFO block and the .ico into the exe so
-# Explorer, Alt-Tab and the Properties dialog have something to show. Nothing
-# from this crate ends up in the binary.
 winres = "0.1"
 
 [dependencies.windows]

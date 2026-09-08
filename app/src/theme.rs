@@ -1,4 +1,3 @@
-//! Light/dark handling and the HKCU bits the app owns.
 
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{ERROR_SUCCESS, MAX_PATH};
@@ -12,12 +11,10 @@ use windows::Win32::System::Registry::{
 const PERSONALIZE: PCWSTR =
     w!(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
 const RUN_KEY: PCWSTR = w!(r"Software\Microsoft\Windows\CurrentVersion\Run");
-/// Task Manager's "Startup apps" tab does not delete the Run value when you
-/// switch an entry off. It records the decision here instead, under the same
-/// value name, and Explorer consults it at logon.
 const APPROVED_KEY: PCWSTR =
     w!(r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run");
 const APP_VALUE: PCWSTR = w!("WolverineBattery");
+pub const AUTOSTART_ARG: &str = "--startup";
 
 /// The taskbar follows SystemUsesLightTheme, a different setting from the app
 /// theme. A missing value means dark, which is the Windows default.
@@ -80,16 +77,39 @@ fn autostart_command() -> Option<String> {
     }
 }
 
-/// Whether a Run command launches this exact executable.
-fn targets(command: &str, exe: &str) -> bool {
-    command.trim().trim_matches('"').eq_ignore_ascii_case(exe)
+fn split_command(command: &str) -> (&str, &str) {
+    let c = command.trim();
+    if let Some(rest) = c.strip_prefix('"') {
+        return match rest.find('"') {
+            Some(i) => (&rest[..i], rest[i + 1..].trim()),
+            None => (rest, ""),
+        };
+    }
+    match c.find(AUTOSTART_ARG) {
+        Some(i) => (c[..i].trim(), &c[i..]),
+        None => (c, ""),
+    }
 }
 
-/// The first byte of the StartupApproved record, if Windows has written one.
-///
-/// The record is twelve bytes - a flag, then a timestamp nobody needs - but
-/// only the length is documented by observation, so reading a short one is
-/// treated as a record rather than as no record at all.
+/// Whether a Run command launches this exact executable.
+fn targets(command: &str, exe: &str) -> bool {
+    split_command(command).0.eq_ignore_ascii_case(exe)
+}
+
+/// Whether a Run command carries the flag that marks a logon launch.
+fn has_autostart_arg(command: &str) -> bool {
+    split_command(command)
+        .1
+        .split_whitespace()
+        .any(|a| a.eq_ignore_ascii_case(AUTOSTART_ARG))
+}
+
+pub fn launched_at_logon() -> bool {
+    std::env::args()
+        .skip(1)
+        .any(|a| a.eq_ignore_ascii_case(AUTOSTART_ARG))
+}
+
 fn approval_flag() -> Option<u8> {
     unsafe {
         let mut buf = [0u8; 12];
@@ -107,23 +127,13 @@ fn approval_flag() -> Option<u8> {
     }
 }
 
-/// Explorer stores the decision in the low bit: 0x02 and 0x06 are enabled, 0x03
-/// and 0x09 are disabled. No record at all means enabled, which is the state of
-/// every entry nobody has ever switched off.
 fn approval_says_disabled(flag: Option<u8>) -> bool {
     flag.is_some_and(|b| b & 1 == 1)
 }
 
-/// Drop the StartupApproved record so the Run key alone decides.
-///
-/// Deleting rather than rewriting it: absent is the state Windows ships with,
-/// and it cannot disagree with itself the way a hand-built byte string can.
 fn clear_approval() {
     unsafe {
         let mut key = HKEY::default();
-        // Open, never create. If the key is absent there is nothing recorded to
-        // clear, and conjuring it up would be writing to a part of the registry
-        // that is Explorer's, not ours.
         if RegOpenKeyExW(HKEY_CURRENT_USER, APPROVED_KEY, 0, KEY_SET_VALUE, &mut key)
             != ERROR_SUCCESS
         {
@@ -134,14 +144,6 @@ fn clear_approval() {
     }
 }
 
-/// True only when the Run entry points at *this* executable **and** Windows has
-/// not been told to skip it.
-///
-/// An entry that names some other binary is not autostart working, it is
-/// Windows launching something else - so reporting it as enabled tells the user
-/// their controller will be waiting for them when it will not. Switching the
-/// entry off in Task Manager leaves the Run value sitting there untouched and
-/// produces exactly the same lie, so both have to be checked.
 pub fn autostart_enabled() -> bool {
     match autostart_command() {
         Some(cmd) => targets(&cmd, &exe_path()) && !approval_says_disabled(approval_flag()),
@@ -149,25 +151,15 @@ pub fn autostart_enabled() -> bool {
     }
 }
 
-/// Repoint a stale entry at the current executable.
-///
-/// The entry existing is the user's intent. Renaming or moving the binary must
-/// not silently turn that intent into a no-op, which is what happened when the
-/// bin was renamed and the Run key went on naming the old file.
-///
-/// Only the path is repaired, never whether the entry is switched on. Someone
-/// who turned it off in Task Manager meant it, and that record is left alone.
 pub fn repair_autostart() {
     let exe = exe_path();
-    if autostart_command().is_some_and(|cmd| !targets(&cmd, &exe)) {
+    if autostart_command().is_some_and(|cmd| !targets(&cmd, &exe) || !has_autostart_arg(&cmd)) {
         write_run_value(true);
     }
 }
 
 pub fn set_autostart(on: bool) {
     write_run_value(on);
-    // Either way the Run key now says all there is to say. A leftover
-    // StartupApproved record could only contradict it.
     clear_approval();
 }
 
@@ -189,7 +181,7 @@ fn write_run_value(on: bool) {
             return;
         }
         if on {
-            let quoted = format!("\"{}\"", exe_path());
+            let quoted = format!("\"{}\" {AUTOSTART_ARG}", exe_path());
             let mut wide: Vec<u16> = quoted.encode_utf16().collect();
             wide.push(0);
             let bytes = std::slice::from_raw_parts(
@@ -206,7 +198,7 @@ fn write_run_value(on: bool) {
 
 #[cfg(test)]
 mod tests {
-    use super::{approval_says_disabled, targets};
+    use super::{approval_says_disabled, has_autostart_arg, targets, AUTOSTART_ARG};
 
     const EXE: &str = r"C:\Tools\WolverineBatteryWidget.exe";
 
@@ -215,15 +207,32 @@ mod tests {
         assert!(targets(&format!("\"{EXE}\""), EXE));
         assert!(targets(EXE, EXE));
         assert!(targets(&format!("  \"{EXE}\"  "), EXE));
-        // The Run key is written by Windows tooling as often as by us, so the
-        // case it comes back in is not ours to assume.
         assert!(targets(&EXE.to_uppercase(), EXE));
     }
 
     #[test]
+    fn the_startup_flag_does_not_hide_the_exe() {
+        let cmd = format!("\"{EXE}\" {AUTOSTART_ARG}");
+        assert!(targets(&cmd, EXE));
+        assert!(has_autostart_arg(&cmd));
+    }
+
+    #[test]
+    fn an_entry_written_before_the_flag_existed_still_matches() {
+        assert!(targets(&format!("\"{EXE}\""), EXE));
+        assert!(!has_autostart_arg(&format!("\"{EXE}\"")));
+    }
+
+    #[test]
+    fn a_space_in_the_path_survives_the_split() {
+        const SPACED: &str = r"C:\Users\me\Razer Controller Widget\App.exe";
+        assert!(targets(&format!("\"{SPACED}\" {AUTOSTART_ARG}"), SPACED));
+        assert!(targets(&format!("{SPACED} {AUTOSTART_ARG}"), SPACED));
+        assert!(targets(SPACED, SPACED));
+    }
+
+    #[test]
     fn a_command_naming_another_binary_does_not_match() {
-        // The exact shape of the bug: the bin was renamed and the Run key went
-        // on naming the old file, which still existed and still launched.
         assert!(!targets("\"C:\\Tools\\WolverineBattery.exe\"", EXE));
         assert!(!targets("\"C:\\Elsewhere\\WolverineBatteryWidget.exe\"", EXE));
         assert!(!targets("", EXE));
@@ -231,17 +240,13 @@ mod tests {
 
     #[test]
     fn no_startup_approved_record_means_enabled() {
-        // The state of every Run entry nobody has ever opened Task Manager for.
         assert!(!approval_says_disabled(None));
     }
 
     #[test]
     fn the_low_bit_of_the_flag_decides() {
-        // Written by Explorer on first sight of the entry, and after a re-enable.
         assert!(!approval_says_disabled(Some(0x02)));
         assert!(!approval_says_disabled(Some(0x06)));
-        // The case this whole check exists for: switched off in Task Manager,
-        // Run value still present and still naming us.
         assert!(approval_says_disabled(Some(0x03)));
         assert!(approval_says_disabled(Some(0x09)));
     }

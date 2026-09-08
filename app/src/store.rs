@@ -1,8 +1,3 @@
-//! Last-known readings and sample history, persisted to %LOCALAPPDATA%.
-//!
-//! Devices are separated by `|`, the history from the head by `#`, points by
-//! `;`. The markers cannot be letters: `h` collided with the `h` in `charging`
-//! and silently truncated every record.
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -184,9 +179,6 @@ mod tests {
         let _guard = STORE.lock().unwrap_or_else(|e| e.into_inner());
         let dir = sandbox("wolverine-store-corrupt").join("WolverineBattery");
         std::fs::create_dir_all(&dir).unwrap();
-        // 999 is not a battery level. It must not become 255, or 231, or
-        // anything else that would render as a plausible percentage. The
-        // second record is intact, so a bad one must not take the file with it.
         std::fs::write(
             dir.join("state.json"),
             "{\"version\":2}\

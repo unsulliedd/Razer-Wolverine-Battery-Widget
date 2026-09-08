@@ -1,6 +1,3 @@
-//! Battery glyph, drawn at runtime: 4x oversampled into an RGBA buffer and
-//! box-filtered down. No image assets, and no digits - at 16 px a percentage is
-//! unreadable, so the fill level carries it and the tooltip carries the number.
 
 use windows::Win32::Foundation::HWND;
 use windows::Win32::Graphics::Gdi::{
@@ -14,8 +11,6 @@ const SS: u32 = 4; // supersample factor
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct IconSpec {
     pub size: u32,
-    /// Whole percent, or None for no reading, which draws a dash rather than
-    /// an empty or a full battery.
     pub fill: Option<u8>,
     pub charging: bool,
     pub light_taskbar: bool,
@@ -115,8 +110,6 @@ pub fn render(spec: IconSpec) -> Option<HICON> {
     to_icon(&bits, size)
 }
 
-/// Bottom-up premultiplied BGRA plus the edge length. Split out from `render`
-/// so the result can be inspected without going through the shell.
 fn rasterize(spec: IconSpec) -> (Vec<u8>, u32) {
     let s = spec.size.max(8);
     let n = s * SS;
@@ -129,7 +122,6 @@ fn rasterize(spec: IconSpec) -> (Vec<u8>, u32) {
     } else {
         Rgba(0xFF, 0xFF, 0xFF, 0xFF)
     };
-    // Reads on both light and dark taskbars.
     let low = Rgba(0xE8, 0x11, 0x23, 0xFF);
     let level = spec.fill.unwrap_or(0);
     let body_col = if spec.fill.is_some() && level <= 10 && !spec.charging {
@@ -157,7 +149,6 @@ fn rasterize(spec: IconSpec) -> (Vec<u8>, u32) {
         clear,
     );
 
-    // Terminal nub.
     round_rect(
         &mut c,
         bx1 + f * 0.02,
@@ -168,7 +159,6 @@ fn rasterize(spec: IconSpec) -> (Vec<u8>, u32) {
         body_col,
     );
 
-    // Charge level.
     let gap = stroke * 0.7;
     let ix0 = bx0 + stroke + gap;
     let ix1 = bx1 - stroke - gap;
@@ -195,9 +185,6 @@ fn rasterize(spec: IconSpec) -> (Vec<u8>, u32) {
     }
 
     if spec.charging {
-        // An oversized bolt is punched out first so the bolt stays legible
-        // where it crosses the fill. Bolt plus halo must stay inside the body
-        // outline.
         let bh = (iy1 - iy0) * 1.2;
         let bw = bh * 0.66;
         let bxc = (ix0 + ix1) * 0.5 - bw * 0.5;
@@ -291,8 +278,6 @@ fn to_icon(bits: &[u8], size: u32) -> Option<HICON> {
 mod tests {
     use super::*;
 
-    /// Writes a contact sheet of every glyph state to `target/icons.bmp`. A
-    /// tray icon that is subtly wrong is hard to notice at 16 px.
     #[test]
     fn dump_icon_sheet() {
         let size = 32u32;
@@ -348,15 +333,9 @@ mod tests {
         assert!(out.exists());
     }
 
-    /// Generate `assets/icon.ico`, which `build.rs` stamps into the exe. The
-    /// tray glyph is monochrome to contrast with the taskbar; an app icon sits
-    /// on backgrounds of any shade, so the shape is taken from the alpha
-    /// channel and repainted in the accent green.
     #[test]
     fn dump_app_icon() {
         const ACCENT: (u8, u8, u8) = (0x40, 0xD0, 0x6B); // matches Palette::good
-        // 64 is the upscale source for anything larger; a 128 tier would cost
-        // 65 KB of a 250 KB binary.
         let sizes = [16u32, 32, 48, 64];
 
         let images: Vec<(u32, Vec<u8>)> = sizes

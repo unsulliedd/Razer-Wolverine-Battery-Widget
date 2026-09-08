@@ -1,8 +1,3 @@
-//! Battery indicator for the Razer Wolverine V3 Pro, spoken over the
-//! controller's own vendor protocol.
-//!
-//! Reads only work while this process owns the foreground window, which is why
-//! the panel is where the hardware is polled.
 
 #![windows_subsystem = "windows"]
 
@@ -16,9 +11,9 @@ mod store;
 mod theme;
 mod tray;
 
-use std::sync::atomic::{AtomicIsize, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering};
 
-use windows::core::w;
+use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::{CreateMutexW, GetCurrentProcess, SetProcessWorkingSetSize};
@@ -29,7 +24,8 @@ use windows::Win32::UI::HiDpi::{
 use windows::Win32::Graphics::Gdi::InvalidateRect;
 use windows::Win32::UI::Input::KeyboardAndMouse::{TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, LoadCursorW, PostQuitMessage,
+    CreateWindowExW, DefWindowProcW, DispatchMessageW, FindWindowW, GetMessageW, LoadCursorW,
+    PostMessageW, PostQuitMessage,
     KillTimer, RegisterClassW, RegisterWindowMessageW, SetTimer, TranslateMessage, CW_USEDEFAULT,
     IDC_ARROW, MSG, WM_ACTIVATE, WM_LBUTTONUP, WM_DESTROY, WM_DEVICECHANGE, WM_DPICHANGED,
     WM_ERASEBKGND, WM_KEYDOWN, WM_MOUSEMOVE, WM_PAINT, WM_SETTINGCHANGE, WM_TIMER,
@@ -44,36 +40,52 @@ const TIMER_SETTLE: usize = 2;
 const TIMER_POLL: usize = 3;
 const TIMER_TRAY: usize = 4;
 
-/// Roughly a minute of retries at two seconds apart. Past that the shell is not
-/// coming and something else is wrong.
-const TRAY_MAX_TRIES: u32 = 30;
-static TRAY_TRIES: AtomicU32 = AtomicU32::new(0);
+const TRAY_RETRY_MIN_MS: u32 = 2_000;
+const TRAY_RETRY_MAX_MS: u32 = 30_000;
+static TRAY_RETRY_MS: AtomicU32 = AtomicU32::new(TRAY_RETRY_MIN_MS);
 
-/// Put the icon in the notification area, retrying while the shell refuses it.
-///
-/// At logon the Run key starts us before the notification area is ready and
-/// `NIM_ADD` fails. `TaskbarCreated` only arrives if Explorer restarts, so
-/// without this the icon never appeared for the rest of the session.
+static PENDING_SHOW: AtomicBool = AtomicBool::new(false);
+
 fn ensure_tray(hwnd: HWND) {
+    if tray_mut().is_some_and(|t| t.is_shown()) {
+        return;
+    }
     let added = tray_mut().map(|t| t.install()).unwrap_or(false);
     unsafe {
         if added {
-            TRAY_TRIES.store(0, Ordering::Relaxed);
+            TRAY_RETRY_MS.store(TRAY_RETRY_MIN_MS, Ordering::Relaxed);
             KillTimer(hwnd, TIMER_TRAY).ok();
             if let Some(t) = tray_mut() {
                 t.update(&tooltip());
             }
-        } else if TRAY_TRIES.fetch_add(1, Ordering::Relaxed) < TRAY_MAX_TRIES {
-            SetTimer(hwnd, TIMER_TRAY, 2_000, None);
+            if PENDING_SHOW.swap(false, Ordering::Relaxed) {
+                open_panel();
+            }
         } else {
-            KillTimer(hwnd, TIMER_TRAY).ok();
+            let wait = TRAY_RETRY_MS.load(Ordering::Relaxed);
+            SetTimer(hwnd, TIMER_TRAY, wait, None);
+            TRAY_RETRY_MS.store((wait * 2).min(TRAY_RETRY_MAX_MS), Ordering::Relaxed);
         }
     }
 }
 
-/// Hand back the pages touched during startup or while the panel was open. The
-/// WinRT and GDI stacks leave a large resident footprint behind after a window
-/// has been shown; the pages fault back in if they are needed.
+unsafe fn show_panel_when_ready(hwnd: HWND) {
+    if tray_mut().is_some_and(|t| t.is_shown()) {
+        open_panel();
+        return;
+    }
+    PENDING_SHOW.store(true, Ordering::Relaxed);
+    TRAY_RETRY_MS.store(TRAY_RETRY_MIN_MS, Ordering::Relaxed);
+    ensure_tray(hwnd);
+}
+
+unsafe fn open_panel() {
+    let fly = flyout_hwnd();
+    if !fly.is_invalid() && !flyout::is_visible(fly) {
+        toggle_flyout();
+    }
+}
+
 fn trim_working_set() {
     unsafe {
         let _ = SetProcessWorkingSetSize(GetCurrentProcess(), usize::MAX, usize::MAX);
@@ -94,6 +106,7 @@ fn host_hwnd() -> HWND {
 }
 
 static mut TASKBAR_CREATED: u32 = 0;
+static mut WM_SHOW_PANEL: u32 = 0;
 
 fn tray_mut() -> Option<&'static mut tray::Tray> {
     unsafe { (&raw mut TRAY).as_mut().and_then(|t| t.as_mut()) }
@@ -164,6 +177,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) ->
         }
         WM_TIMER if w.0 == TIMER_TICK => {
             gip::reconcile_connected();
+            ensure_tray(hwnd);
             if let Some(t) = tray_mut() {
                 t.update(&tooltip());
             }
@@ -185,8 +199,15 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) ->
         }
         // Explorer restarted and took the icon with it.
         _ if msg == TASKBAR_CREATED && TASKBAR_CREATED != 0 => {
-            TRAY_TRIES.store(0, Ordering::Relaxed);
+            if let Some(t) = tray_mut() {
+                t.mark_lost();
+            }
+            TRAY_RETRY_MS.store(TRAY_RETRY_MIN_MS, Ordering::Relaxed);
             ensure_tray(hwnd);
+            LRESULT(0)
+        }
+        _ if msg == WM_SHOW_PANEL && WM_SHOW_PANEL != 0 => {
+            show_panel_when_ready(hwnd);
             LRESULT(0)
         }
         WM_DESTROY => {
@@ -225,8 +246,6 @@ unsafe extern "system" fn flyout_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM
             if changed {
                 let _ = InvalidateRect(hwnd, None, false);
             }
-            // One WM_MOUSELEAVE, or a highlight stays lit after the pointer has
-            // left the window.
             let mut tme = TRACKMOUSEEVENT {
                 cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
                 dwFlags: TME_LEAVE,
@@ -303,8 +322,6 @@ unsafe fn toggle_flyout() {
         .and_then(|t| t.icon_rect())
         .unwrap_or(RECT { left: 0, top: 0, right: 0, bottom: 0 });
     flyout::show(fly, anchor);
-    // Polling only while the panel is open is not an optimisation: a read
-    // cannot succeed at any other time.
     SetTimer(host_hwnd(), TIMER_POLL, 3_000, None);
 }
 
@@ -324,13 +341,17 @@ unsafe fn open_settings() {
 
 fn main() {
     unsafe {
-        // Single instance; a second copy would fight over the tray icon.
+        let show_panel = RegisterWindowMessageW(w!("WolverineBatteryShowPanel"));
         let _mutex = CreateMutexW(None, true, w!("Local\\WolverineBattery.SingleInstance"));
         if windows::Win32::Foundation::GetLastError()
             == windows::Win32::Foundation::ERROR_ALREADY_EXISTS
         {
+            if let Ok(running) = FindWindowW(w!("WolverineBatteryHost"), PCWSTR::null()) {
+                let _ = PostMessageW(running, show_panel, WPARAM(0), LPARAM(0));
+            }
             return;
         }
+        WM_SHOW_PANEL = show_panel;
 
         store::load();
         theme::repair_autostart();
@@ -340,9 +361,6 @@ fn main() {
         let hinst = GetModuleHandleW(None).expect("module handle");
 
         let main_class = w!("WolverineBatteryHost");
-        // A class with no hCursor never sets one, so the pointer keeps whatever
-        // shape it had on the way in - from the tray icon that is
-        // IDC_APPSTARTING.
         let arrow = LoadCursorW(None, IDC_ARROW).unwrap_or_default();
 
         let _ = RegisterClassW(&WNDCLASSW {
@@ -352,8 +370,6 @@ fn main() {
             hCursor: arrow,
             ..Default::default()
         });
-        // Never shown, but a real window with a real pump, which
-        // Windows.Gaming.Input requires before it enumerates anything at all.
         let hwnd = CreateWindowExW(
             WS_EX_TOOLWINDOW,
             main_class,
@@ -402,6 +418,7 @@ fn main() {
         let mut t = tray::Tray::new(hwnd);
         t.update(&tooltip());
         TRAY = Some(t);
+        PENDING_SHOW.store(!theme::launched_at_logon(), Ordering::Relaxed);
         ensure_tray(hwnd);
 
         gip::register();
