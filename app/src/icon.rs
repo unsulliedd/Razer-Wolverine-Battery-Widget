@@ -349,7 +349,7 @@ mod tests {
                 });
                 assert_eq!(s, size);
                 let mut out = bits.clone();
-                for px in out.chunks_exact_mut(4) {
+                for px in out.chunks_mut(4) {
                     // An ICO carries straight alpha, so keep the alpha and
                     // write the colour unscaled.
                     px[0] = ACCENT.2;
