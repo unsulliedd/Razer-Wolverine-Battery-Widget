@@ -32,7 +32,7 @@ Due to Microsoft being a hard-ass it only works when the widget is open and in f
 
 ## How it works
 
-The controller’s battery protocol was reverse-engineered by examining its communication, testing requests, and comparing responses with known battery readings. The widget uses this protocol to request the battery level directly through Windows’ controller interface. It validates each response’s command, transaction ID, and checksum before converting the raw value from its 0–255 range into a battery percentage.
+The controller’s battery protocol was reverse-engineered by examining its communication, testing requests, and comparing responses with known battery readings. The widget uses this protocol to request the battery level directly through the Windows controller interface. It validates each response’s command, transaction ID, and checksum before converting the raw value from a 0–255 range into a battery percentage.
 
 ## Requirements
 
