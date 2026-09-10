@@ -28,6 +28,9 @@ graph.
 
 Due to Microsoft being a hard-ass it only works when the widget is open and in focus, background battery requests get ignored unfortunately.
 
+<img width="499" height="469" alt="afbeelding" src="https://github.com/user-attachments/assets/3de6d889-243a-40c3-9c3a-0ab91bcfc845" />
+
+
 ## Requirements
 
 - **Windows 10 version 1709 (build 16299) or newer**, or Windows 11, 64-bit.
