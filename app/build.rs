@@ -15,7 +15,8 @@ fn main() {
     }
     res.set("ProductName", "Wolverine Battery Widget")
         .set("FileDescription", "Battery indicator for the Razer Wolverine V3 Pro")
-        .set("LegalCopyright", "MIT licensed. Not affiliated with Razer Inc.")
+        .set("CompanyName", "unsulliedd")
+        .set("LegalCopyright", "Copyright (c) 2026 rubenrex, unsulliedd. MIT licensed. Not affiliated with Razer Inc.")
         .set("OriginalFilename", "WolverineBatteryWidget.exe");
 
     // rc.exe is not in every toolchain, and the binary works without an icon.

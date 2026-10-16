@@ -1,6 +1,6 @@
 [package]
 name = "wolverine-battery-widget"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2021"
 license = "MIT"
 description = "Battery indicator for the Razer Wolverine V3 Pro, with no Razer software"
