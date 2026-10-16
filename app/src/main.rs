@@ -1,6 +1,7 @@
 
 #![windows_subsystem = "windows"]
 
+mod alert;
 mod flyout;
 mod gip;
 mod hid;
@@ -40,6 +41,8 @@ const TIMER_TICK: usize = 1;
 const TIMER_SETTLE: usize = 2;
 const TIMER_POLL: usize = 3;
 const TIMER_TRAY: usize = 4;
+/// On the flyout window, not the host.
+const TIMER_REFRESH_FEEDBACK: usize = 5;
 
 const TRAY_RETRY_MIN_MS: u32 = 2_000;
 const TRAY_RETRY_MAX_MS: u32 = 30_000;
@@ -119,20 +122,50 @@ fn tooltip() -> String {
         return "No controller connected".into();
     };
     if !d.connected {
-        return format!("{} \u{2014} disconnected", d.name);
+        return match (d.percent(), d.battery) {
+            (Some(p), Some(s)) => format!(
+                "{} \u{2014} disconnected\nLast {}%, {}",
+                d.name,
+                p.round() as i32,
+                state::describe_age(s.age())
+            ),
+            _ => format!("{} \u{2014} disconnected", d.name),
+        };
     }
     match (d.percent(), d.battery) {
         (Some(p), Some(s)) => {
-            let charge = if d.is_charging() { ", charging" } else { "" };
+            // Charging readings run high (voltage-based), so mark them as estimates.
+            let (approx, charge) = if d.is_charging() { ("~", ", charging") } else { ("", "") };
             format!(
-                "{} \u{2014} {}%{}\n{}",
+                "{} \u{2014} {}{}%{}\n{}",
                 d.name,
+                approx,
                 p.round() as i32,
                 charge,
                 state::describe_age(s.age())
             )
         }
         _ => format!("{} \u{2014} open the panel to read battery", d.name),
+    }
+}
+
+fn low_battery_alert() {
+    let devices = state::snapshot();
+    let Some(d) = devices.iter().find(|d| d.connected) else {
+        return;
+    };
+    let (Some(p), Some(s)) = (d.percent(), d.battery) else {
+        return;
+    };
+    // Only fresh readings; a restored value is history, not news.
+    if s.age().as_secs() > 120 {
+        return;
+    }
+    let pct = p.round() as u8;
+    if alert::check(pct, d.is_charging()).is_some() && !store::flag(store::NO_ALERTS) {
+        if let Some(t) = tray_mut() {
+            t.notify("Controller battery low", &format!("{} is at {pct}%.", d.name));
+        }
     }
 }
 
@@ -156,6 +189,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) ->
             if let Some(t) = tray_mut() {
                 t.update(&tooltip());
             }
+            low_battery_alert();
             let fly = flyout_hwnd();
             if !fly.is_invalid() && flyout::is_visible(fly) {
                 flyout::resize_to_content(fly);
@@ -180,7 +214,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) ->
         WM_TIMER if w.0 == TIMER_TICK => {
             gip::reconcile_connected();
             // PC mode can be read from the background; opt-in from settings.
-            if store::background_enabled() {
+            if store::flag(store::BACKGROUND) {
                 hid::request_refresh();
             }
             ensure_tray(hwnd);
@@ -241,14 +275,16 @@ unsafe extern "system" fn flyout_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM
         }
         WM_MOUSEMOVE => {
             let (x, y) = ((l.0 & 0xFFFF) as i16 as i32, ((l.0 >> 16) & 0xFFFF) as i16 as i32);
-            let changed = match flyout::page() {
-                flyout::Page::Settings => flyout::set_hover(flyout::settings_row_at(hwnd, x, y)),
-                flyout::Page::Battery => {
-                    let footer = flyout::set_footer_hover(flyout::footer_hover_at(hwnd, x, y));
-                    let chart = flyout::set_chart_hover(flyout::chart_hover_at(hwnd, x, y));
-                    footer || chart
-                }
-            };
+            let button = flyout::set_button_hover(flyout::button_at(hwnd, x, y));
+            let changed = button
+                || match flyout::page() {
+                    flyout::Page::Settings => flyout::set_hover(flyout::settings_row_at(hwnd, x, y)),
+                    flyout::Page::Battery => {
+                        let footer = flyout::set_footer_hover(flyout::footer_hover_at(hwnd, x, y));
+                        let chart = flyout::set_chart_hover(flyout::chart_hover_at(hwnd, x, y));
+                        footer || chart
+                    }
+                };
             if changed {
                 let _ = InvalidateRect(hwnd, None, false);
             }
@@ -265,7 +301,8 @@ unsafe extern "system" fn flyout_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM
             let a = flyout::set_hover(None);
             let b = flyout::set_footer_hover(None);
             let c = flyout::set_chart_hover(None);
-            if a || b || c {
+            let d = flyout::set_button_hover(None);
+            if a || b || c || d {
                 let _ = InvalidateRect(hwnd, None, false);
             }
             LRESULT(0)
@@ -282,21 +319,41 @@ unsafe extern "system" fn flyout_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM
                 let _ = InvalidateRect(hwnd, None, false);
                 return LRESULT(0);
             }
+            if flyout::page() == flyout::Page::Battery && flyout::footer_hover_at(hwnd, x, y).is_some() {
+                flyout::toggle_footer_info();
+                let _ = InvalidateRect(hwnd, None, false);
+                return LRESULT(0);
+            }
+            if flyout::button_at(hwnd, x, y) == Some(flyout::BUTTON_BACKGROUND) {
+                store::set_flag(store::BACKGROUND, !store::flag(store::BACKGROUND));
+                let _ = InvalidateRect(hwnd, None, false);
+                return LRESULT(0);
+            }
+            if flyout::button_at(hwnd, x, y) == Some(flyout::BUTTON_REFRESH) {
+                gip::request_refresh();
+                hid::request_refresh();
+                // Shows as in progress until the timer repaints it back.
+                flyout::mark_refreshing();
+                SetTimer(hwnd, TIMER_REFRESH_FEEDBACK, flyout::REFRESH_FEEDBACK_MS, None);
+                let _ = InvalidateRect(hwnd, None, false);
+                return LRESULT(0);
+            }
             if flyout::page() == flyout::Page::Settings {
+                let toggle = |name: &str| store::set_flag(name, !store::flag(name));
                 match flyout::settings_row_at(hwnd, x, y) {
-                    Some(flyout::ROW_REFRESH) => {
-                        gip::request_refresh();
-                        hid::request_refresh();
-                        flyout::set_page(flyout::Page::Battery);
-                        flyout::resize_to_content(hwnd);
-                        let _ = InvalidateRect(hwnd, None, false);
-                    }
                     Some(flyout::ROW_AUTOSTART) => {
                         theme::set_autostart(!theme::autostart_enabled());
                         let _ = InvalidateRect(hwnd, None, false);
                     }
-                    Some(flyout::ROW_BACKGROUND) => {
-                        store::set_background(!store::background_enabled());
+                    Some(flyout::ROW_TRAY_PERCENT) => {
+                        toggle(store::TRAY_PERCENT);
+                        if let Some(t) = tray_mut() {
+                            t.update(&tooltip());
+                        }
+                        let _ = InvalidateRect(hwnd, None, false);
+                    }
+                    Some(flyout::ROW_ALERTS) => {
+                        toggle(store::NO_ALERTS);
                         let _ = InvalidateRect(hwnd, None, false);
                     }
                     Some(flyout::ROW_QUIT) => {
@@ -308,6 +365,11 @@ unsafe extern "system" fn flyout_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM
                     _ => {}
                 }
             }
+            LRESULT(0)
+        }
+        WM_TIMER if w.0 == TIMER_REFRESH_FEEDBACK => {
+            KillTimer(hwnd, TIMER_REFRESH_FEEDBACK).ok();
+            let _ = InvalidateRect(hwnd, None, false);
             LRESULT(0)
         }
         WM_KEYDOWN if w.0 == 0x1B => {
@@ -365,6 +427,7 @@ fn main() {
         WM_SHOW_PANEL = show_panel;
 
         store::load();
+        state::restore();
         theme::repair_autostart();
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         let _ = RoInitialize(RO_INIT_SINGLETHREADED);

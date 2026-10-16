@@ -2,14 +2,14 @@
 
 use windows::Win32::Foundation::{HWND, LPARAM, RECT, WPARAM};
 use windows::Win32::UI::Shell::{
-    Shell_NotifyIconGetRect, Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_SHOWTIP, NIF_TIP,
+    Shell_NotifyIconGetRect, Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_SHOWTIP, NIF_TIP, NIIF_WARNING,
     NIM_ADD, NIM_DELETE, NIM_MODIFY, NIM_SETVERSION, NOTIFYICONDATAW, NOTIFYICONIDENTIFIER,
     NOTIFYICON_VERSION_4,
 };
 use windows::Win32::UI::WindowsAndMessaging::{DestroyIcon, HICON};
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 
-use crate::icon::{self, IconSpec};
+use crate::icon::{self, IconSpec, Style};
 use crate::state;
 
 pub const WM_TRAY: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 2;
@@ -63,6 +63,7 @@ impl Tray {
                 .map(|p| p.round().clamp(0.0, 100.0) as u8),
             charging: active.map(|d| d.is_charging()).unwrap_or(false),
             light_taskbar: crate::theme::taskbar_is_light(),
+            style: if crate::store::flag(crate::store::TRAY_PERCENT) { Style::Number } else { Style::Controller },
         };
 
         if self.last != Some(spec) || !self.shown {
@@ -89,6 +90,21 @@ impl Tray {
         if self.shown {
             unsafe { let _ = Shell_NotifyIconW(NIM_MODIFY, &nid); }
         }
+    }
+
+    /// A notification from the tray icon; Windows shows it as a toast.
+    pub fn notify(&self, title: &str, text: &str) {
+        if !self.shown {
+            return;
+        }
+        let mut nid = self.base();
+        nid.uFlags = NIF_INFO;
+        nid.dwInfoFlags = NIIF_WARNING;
+        let t: Vec<u16> = title.encode_utf16().take(nid.szInfoTitle.len() - 1).collect();
+        nid.szInfoTitle[..t.len()].copy_from_slice(&t);
+        let b: Vec<u16> = text.encode_utf16().take(nid.szInfo.len() - 1).collect();
+        nid.szInfo[..b.len()].copy_from_slice(&b);
+        unsafe { let _ = Shell_NotifyIconW(NIM_MODIFY, &nid); }
     }
 
     #[must_use]

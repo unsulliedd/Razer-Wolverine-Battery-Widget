@@ -22,9 +22,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
     SW_HIDE, SW_SHOW, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
 };
 
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Mutex, OnceLock};
-use std::time::SystemTime;
+use std::time::{Instant, SystemTime};
 
 use crate::state::{self, Device};
 
@@ -89,6 +89,8 @@ fn icon_font() -> PCWSTR {
 const GLYPH_GAMEPAD: &str = "\u{E7FC}";
 const GLYPH_BOLT: &str = "\u{E945}";
 const GLYPH_GEAR: &str = "\u{E713}";
+const GLYPH_REFRESH: &str = "\u{E72C}";
+const GLYPH_CLOCK: &str = "\u{E823}";
 const GLYPH_BACK: &str = "\u{E72B}";
 const GLYPH_CHECK: &str = "\u{E73E}";
 const GLYPH_INFO: &str = "\u{E946}";
@@ -99,9 +101,9 @@ pub enum Page {
     Settings,
 }
 
-pub const ROW_REFRESH: usize = 0;
-pub const ROW_AUTOSTART: usize = 1;
-pub const ROW_BACKGROUND: usize = 2;
+pub const ROW_AUTOSTART: usize = 0;
+pub const ROW_TRAY_PERCENT: usize = 1;
+pub const ROW_ALERTS: usize = 2;
 pub const ROW_QUIT: usize = 3;
 const ROW_COUNT: usize = 4;
 const ROW_DIP: i32 = 40;
@@ -132,6 +134,12 @@ pub fn set_hover(row: Option<usize>) -> bool {
 static FOOTERS: Mutex<Vec<[i32; 4]>> = Mutex::new(Vec::new());
 /// Card whose info glyph the pointer is over, or -1.
 static FOOTER_HOVER: AtomicI32 = AtomicI32::new(-1);
+/// The footer shows the reading explanation instead of the age.
+static FOOTER_INFO: AtomicBool = AtomicBool::new(false);
+
+pub fn toggle_footer_info() {
+    FOOTER_INFO.fetch_xor(true, Ordering::Relaxed);
+}
 
 pub fn footer_hover_at(hwnd: HWND, x: i32, y: i32) -> Option<i32> {
     let s = |v: i32| scale(v, dpi_for_window(hwnd));
@@ -354,6 +362,132 @@ pub fn gear_rect(hwnd: HWND) -> RECT {
         right: rc.right - s(PAD) + s(SP_1),
         bottom: s(PAD) + s(28),
     }
+}
+
+/// Header buttons, numbered by slot from the right; the gear is slot 0 and
+/// the settings page shows only that one (as back).
+pub const BUTTON_GEAR: i32 = 0;
+pub const BUTTON_REFRESH: i32 = 1;
+pub const BUTTON_BACKGROUND: i32 = 2;
+const BUTTON_STEP: i32 = SP_6 + SP_2;
+static BUTTON_HOVER: AtomicI32 = AtomicI32::new(-1);
+
+fn button_rect(hwnd: HWND, slot: i32) -> RECT {
+    let gear = gear_rect(hwnd);
+    let shift = scale(BUTTON_STEP, dpi_for_window(hwnd)) * slot;
+    RECT { left: gear.left - shift, right: gear.right - shift, ..gear }
+}
+static REFRESHING_SINCE: Mutex<Option<Instant>> = Mutex::new(None);
+/// How long a click on refresh shows as in progress.
+pub const REFRESH_FEEDBACK_MS: u32 = 1500;
+
+fn inside(r: RECT, x: i32, y: i32) -> bool {
+    x >= r.left && x <= r.right && y >= r.top && y <= r.bottom
+}
+
+/// The header button under the cursor. The settings page has only the back
+/// button, which sits where the gear is.
+pub fn button_at(hwnd: HWND, x: i32, y: i32) -> Option<i32> {
+    let last = if page() == Page::Battery { BUTTON_BACKGROUND } else { BUTTON_GEAR };
+    (BUTTON_GEAR..=last).find(|slot| inside(button_rect(hwnd, *slot), x, y))
+}
+
+pub fn set_button_hover(v: Option<i32>) -> bool {
+    let want = v.unwrap_or(-1);
+    BUTTON_HOVER.swap(want, Ordering::Relaxed) != want
+}
+
+pub fn mark_refreshing() {
+    if let Ok(mut r) = REFRESHING_SINCE.lock() {
+        *r = Some(Instant::now());
+    }
+}
+
+fn refreshing() -> bool {
+    REFRESHING_SINCE
+        .lock()
+        .ok()
+        .and_then(|r| *r)
+        .is_some_and(|t| t.elapsed().as_millis() < REFRESH_FEEDBACK_MS as u128)
+}
+
+/// A header icon with the hover backdrop the settings rows use.
+fn draw_button(g: &Painter, p: &Palette, left: i32, glyph_str: &str, hovered: bool, color: COLORREF) {
+    let pad = g.s(PAD);
+    let r = RECT { left, top: pad, right: left + g.s(SP_6) + g.s(SP_1), bottom: pad + g.s(28) };
+    if hovered {
+        g.round_fill(r.left - g.s(SP_1), r.top, r.right + g.s(SP_1), r.bottom, g.s(SP_1), p.track);
+    }
+    g.icon(glyph_str, r, GL_MEDIUM, color, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+}
+
+/// Background reading, refresh and gear at the top right of the battery page.
+fn draw_header_buttons(g: &Painter, p: &Palette, cw: i32) {
+    let gear_l = cw - g.s(PAD) - g.s(SP_6);
+    let left = |slot: i32| gear_l - g.s(BUTTON_STEP) * slot;
+    let hover = BUTTON_HOVER.load(Ordering::Relaxed);
+    let tint = |slot: i32| if hover == slot { p.text } else { p.dim };
+
+    let background = crate::store::flag(crate::store::BACKGROUND);
+    draw_button(
+        g,
+        p,
+        left(BUTTON_BACKGROUND),
+        GLYPH_CLOCK,
+        hover == BUTTON_BACKGROUND,
+        if background { p.good } else { tint(BUTTON_BACKGROUND) },
+    );
+    if background {
+        // Status dot in the button's top-right corner.
+        let d = g.s(SP_1 + 2);
+        let x = left(BUTTON_BACKGROUND) + g.s(SP_6) - d / 2;
+        let y = g.s(PAD) + g.s(SP_1);
+        g.round_fill(x, y, x + d, y + d, d / 2, p.good);
+    }
+
+    let busy = refreshing();
+    draw_button(
+        g,
+        p,
+        left(BUTTON_REFRESH),
+        GLYPH_REFRESH,
+        hover == BUTTON_REFRESH || busy,
+        if busy { p.good } else { tint(BUTTON_REFRESH) },
+    );
+    draw_button(g, p, left(BUTTON_GEAR), GLYPH_GEAR, hover == BUTTON_GEAR, tint(BUTTON_GEAR));
+}
+
+/// Explains the background button while the cursor is on it. Drawn last so
+/// it sits on top of the card.
+fn draw_button_tip(g: &Painter, p: &Palette, cw: i32) {
+    if BUTTON_HOVER.load(Ordering::Relaxed) != BUTTON_BACKGROUND {
+        return;
+    }
+    let text = if crate::store::flag(crate::store::BACKGROUND) {
+        "Reading every 30 s, panel closed too (PC mode)"
+    } else {
+        "Click to also read every 30 s with the panel closed"
+    };
+    draw_tip(g, p, cw, text, g.s(PAD) + g.s(28) + g.s(SP_1));
+}
+
+/// What the footer's info icon explains when clicked.
+fn reading_tip() -> &'static str {
+    if crate::store::flag(crate::store::BACKGROUND) {
+        "Reads every 30 s, also with the panel closed (PC mode)"
+    } else {
+        "Reads only while this panel is open"
+    }
+}
+
+/// A one-line tip bubble, right-aligned with the header buttons, at `top`.
+fn draw_tip(g: &Painter, p: &Palette, cw: i32, text: &str, top: i32) {
+    let font = ui(TX_META, FW_NORMAL.0 as i32);
+    let right = cw - g.s(PAD) + g.s(SP_1);
+    let w = (g.width_of(text, font) + g.s(SP_2) * 2).min(right - g.s(SP_2));
+    let r = RECT { left: right - w, top, right, bottom: top + g.s(SP_6) };
+    g.round_fill(r.left, r.top, r.right, r.bottom, g.s(SP_1), p.track);
+    g.text(text, r, TX_META, FW_NORMAL.0 as i32, p.text, DT_CENTER | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
 }
 
 #[derive(Clone, Copy)]
@@ -747,6 +881,7 @@ pub fn on_paint(hwnd: HWND) -> LRESULT {
                     draw_card(&g, &p, cw, y, d, i);
                     y += g.s(CARD_DIP);
                 }
+                draw_button_tip(&g, &p, cw);
             }
         }
 
@@ -793,17 +928,14 @@ fn draw_settings(g: &Painter, p: &Palette, cw: i32) {
         DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX,
     );
 
-    g.icon(
+    let back_hover = BUTTON_HOVER.load(Ordering::Relaxed) == BUTTON_GEAR;
+    draw_button(
+        g,
+        p,
+        cw - pad - g.s(SP_6),
         GLYPH_BACK,
-        RECT {
-            left: cw - pad - g.s(SP_6),
-            top: pad,
-            right: cw - pad + g.s(SP_1),
-            bottom: pad + g.s(28),
-        },
-        GL_MEDIUM,
-        p.dim,
-        DT_CENTER | DT_SINGLELINE | DT_VCENTER,
+        back_hover,
+        if back_hover { p.text } else { p.dim },
     );
 
     let hover = HOVER.load(Ordering::Relaxed);
@@ -815,9 +947,9 @@ fn draw_settings(g: &Painter, p: &Palette, cw: i32) {
             g.round_fill(pad - g.s(SP_2), ry, right + g.s(SP_2), rb, g.s(SP_1), p.track);
         }
         let label = match i {
-            ROW_REFRESH => "Refresh now",
             ROW_AUTOSTART => "Start with Windows",
-            ROW_BACKGROUND => "Read in background (PC mode)",
+            ROW_TRAY_PERCENT => "Show percentage in tray",
+            ROW_ALERTS => "Low battery alerts",
             _ => "Quit",
         };
         g.text(
@@ -830,7 +962,8 @@ fn draw_settings(g: &Painter, p: &Palette, cw: i32) {
         );
         let checked = match i {
             ROW_AUTOSTART => crate::theme::autostart_enabled(),
-            ROW_BACKGROUND => crate::store::background_enabled(),
+            ROW_TRAY_PERCENT => crate::store::flag(crate::store::TRAY_PERCENT),
+            ROW_ALERTS => !crate::store::flag(crate::store::NO_ALERTS),
             _ => false,
         };
         if checked {
@@ -847,13 +980,7 @@ fn draw_settings(g: &Painter, p: &Palette, cw: i32) {
 
 fn draw_empty(g: &Painter, p: &Palette, cw: i32, y: i32) {
     let pad = g.s(PAD);
-    g.icon(
-        GLYPH_GEAR,
-        RECT { left: cw - pad - g.s(SP_6), top: pad, right: cw - pad + g.s(SP_1), bottom: pad + g.s(28) },
-        GL_MEDIUM,
-        p.dim,
-        DT_CENTER | DT_SINGLELINE | DT_VCENTER,
-    );
+    draw_header_buttons(g, p, cw);
     g.icon(
         GLYPH_GAMEPAD,
         RECT { left: pad, top: y, right: pad + g.s(28), bottom: y + g.s(28) },
@@ -896,7 +1023,7 @@ fn draw_card(g: &Painter, p: &Palette, cw: i32, top: i32, d: &Device, index: usi
     let name_x = pad + g.s(36);
     g.text(
         d.name,
-        RECT { left: name_x, top: y, right: right - g.s(SP_6), bottom: y + g.s(SP_5) },
+        RECT { left: name_x, top: y, right: right - g.s(SP_6 + BUTTON_STEP * 2), bottom: y + g.s(SP_5) },
         TX_TITLE,
         FW_SEMIBOLD.0 as i32,
         p.text,
@@ -909,28 +1036,25 @@ fn draw_card(g: &Painter, p: &Palette, cw: i32, top: i32, d: &Device, index: usi
     };
     g.text(
         &subtitle,
-        RECT { left: name_x, top: y + g.s(SP_5), right: right - g.s(SP_6), bottom: y + g.s(HEAD_H) },
+        RECT { left: name_x, top: y + g.s(SP_5), right: right - g.s(SP_6 + BUTTON_STEP * 2), bottom: y + g.s(HEAD_H) },
         TX_BODY,
         FW_NORMAL.0 as i32,
         p.dim,
         DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX,
     );
     if first {
-        g.icon(
-            GLYPH_GEAR,
-            RECT { left: right - g.s(SP_6), top: y, right: right + g.s(SP_1), bottom: y + g.s(28) },
-            GL_MEDIUM,
-            p.dim,
-            DT_CENTER | DT_SINGLELINE | DT_VCENTER,
-        );
+        draw_header_buttons(g, p, cw);
     }
     y += g.s(HEAD_H) + g.s(SP_4);
 
     // ---- level ------------------------------------------------------------
     let pct = d.percent();
     let charging = d.is_charging() && d.connected;
-    let col = level_color(p, pct, charging);
+    // A disconnected card shows the last value, dimmed so it can't pass for live.
+    let col = if d.connected { level_color(p, pct, charging) } else { p.dim };
     let big = match pct {
+        // The pad estimates charge from voltage, which reads high on the cable.
+        Some(v) if charging => format!("~{}%", v.round() as i32),
         Some(v) => format!("{}%", v.round() as i32),
         None => "\u{2014}".to_string(),
     };
@@ -1003,35 +1127,29 @@ fn draw_card(g: &Painter, p: &Palette, cw: i32, top: i32, d: &Device, index: usi
     };
     g.round_fill(pad, dot_y, pad + dot, dot_y + dot, dot / 2, fresh);
 
-    if FOOTER_HOVER.load(Ordering::Relaxed) == index as i32 {
-        g.text(
-            "Reads only while this panel is open",
-            RECT { left: pad + g.s(64), top: y, right: right - g.s(SP_6), bottom: bot },
-            TX_META,
-            FW_NORMAL.0 as i32,
-            p.dim,
-            DT_RIGHT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX,
-        );
-    } else {
-        let age = match d.battery {
-            Some(s) => format!("Updated {}", state::describe_age(s.age())),
-            None if crate::gip::transport_ever_worked() => "No reading yet".to_string(),
-            None => "Battery query unavailable".to_string(),
-        };
-        g.text(
-            &age,
-            RECT { left: pad + dot + g.s(SP_2), top: y, right: right - g.s(SP_6), bottom: bot },
-            TX_META,
-            FW_NORMAL.0 as i32,
-            p.dim,
-            DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX,
-        );
-    }
+    let age = match d.battery {
+        // A click on the footer swaps the age for what the info icon explains.
+        _ if FOOTER_INFO.load(Ordering::Relaxed) => reading_tip().to_string(),
+        _ if refreshing() => "Refreshing\u{2026}".to_string(),
+        Some(s) => format!("Updated {}", state::describe_age(s.age())),
+        None if crate::gip::transport_ever_worked() => "No reading yet".to_string(),
+        None => "Battery query unavailable".to_string(),
+    };
+    g.text(
+        &age,
+        RECT { left: pad + dot + g.s(SP_2), top: y, right: right - g.s(SP_6), bottom: bot },
+        TX_META,
+        FW_NORMAL.0 as i32,
+        p.dim,
+        DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX,
+    );
+    // Brighter on hover or while open, so it reads as clickable.
+    let lit = FOOTER_HOVER.load(Ordering::Relaxed) == index as i32 || FOOTER_INFO.load(Ordering::Relaxed);
     g.icon(
         GLYPH_INFO,
         RECT { left: right - g.s(GL_MEDIUM), top: y, right, bottom: bot },
         GL_SMALL,
-        p.dim,
+        if lit { p.text } else { p.dim },
         DT_LEFT | DT_SINGLELINE | DT_VCENTER,
     );
 }

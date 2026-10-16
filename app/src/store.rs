@@ -24,17 +24,21 @@ fn path() -> Option<PathBuf> {
     Some(dir.join("state.json"))
 }
 
-/// The file exists = read PC-mode battery while the panel is closed. Off by default.
-fn background_flag() -> Option<PathBuf> {
-    Some(path()?.with_file_name("read-in-background"))
+/// Settings are empty marker files next to state.json: present = on.
+/// Read PC-mode battery while the panel is closed.
+pub const BACKGROUND: &str = "read-in-background";
+/// Draw the number instead of the battery shape in the tray.
+pub const TRAY_PERCENT: &str = "tray-percent";
+/// Alerts are on by default, so the file records turning them off.
+pub const NO_ALERTS: &str = "no-low-battery-alerts";
+
+pub fn flag(name: &str) -> bool {
+    path().is_some_and(|p| p.with_file_name(name).exists())
 }
 
-pub fn background_enabled() -> bool {
-    background_flag().is_some_and(|p| p.exists())
-}
-
-pub fn set_background(on: bool) {
-    if let Some(p) = background_flag() {
+pub fn set_flag(name: &str, on: bool) {
+    if let Some(p) = path() {
+        let p = p.with_file_name(name);
         let _ = if on { std::fs::write(&p, b"") } else { std::fs::remove_file(&p) };
     }
 }

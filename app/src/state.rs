@@ -183,6 +183,29 @@ pub fn upsert(key: u64, vid: u16, pid: u16, link: Link) {
     notify_ui();
 }
 
+/// Saved readings become disconnected cards, so the panel shows the last value
+/// before the pad connects. Key 0 is never handed out, so nothing touches these
+/// rows until `upsert` claims one by model.
+pub fn restore() {
+    if let Ok(mut guard) = DEVICES.lock() {
+        for (vid, pid, name) in KNOWN {
+            let Some(e) = crate::store::last_known(*vid, *pid) else { continue };
+            guard.push(Device {
+                key: 0,
+                vid: *vid,
+                pid: *pid,
+                name,
+                link: Link::Unknown,
+                connected: false,
+                readable: false,
+                battery: Some(Sample { raw: e.raw, at: e.at }),
+                charging: Some((e.charging, e.at)),
+                history: e.history,
+            });
+        }
+    }
+}
+
 pub fn set_connected(key: u64, connected: bool) {
     with(key, |d| {
         d.connected = connected;

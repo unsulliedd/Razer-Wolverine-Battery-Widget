@@ -14,6 +14,140 @@ pub struct IconSpec {
     pub fill: Option<u8>,
     pub charging: bool,
     pub light_taskbar: bool,
+    pub style: Style,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Style {
+    /// Controller outline that fills left to right with the charge; the app
+    /// icon is drawn from this too.
+    Controller,
+    /// Controller over the number.
+    Number,
+}
+
+/// 3x5 pixel digits; each row's bits run left to right as 0b100, 0b010, 0b001.
+const DIGITS: [[u8; 5]; 10] = [
+    [0b111, 0b101, 0b101, 0b101, 0b111],
+    [0b010, 0b110, 0b010, 0b010, 0b111],
+    [0b111, 0b001, 0b111, 0b100, 0b111],
+    [0b111, 0b001, 0b111, 0b001, 0b111],
+    [0b101, 0b101, 0b111, 0b001, 0b001],
+    [0b111, 0b100, 0b111, 0b001, 0b111],
+    [0b111, 0b100, 0b111, 0b101, 0b111],
+    [0b111, 0b001, 0b001, 0b001, 0b001],
+    [0b111, 0b101, 0b111, 0b101, 0b111],
+    [0b111, 0b101, 0b111, 0b001, 0b111],
+];
+const DASH: [u8; 5] = [0, 0, 0b111, 0, 0];
+
+/// A gamepad silhouette over the number. Glyphs are scaled by a whole number
+/// of pixels so their edges stay sharp at 16 px.
+fn draw_controller_and_number(c: &mut Canvas, size: u32, glyphs: &[[u8; 5]], col: Rgba) {
+    let n = glyphs.len() as u32;
+    let units_w = n * 3 + (n - 1); // one blank unit between glyphs
+    // Never larger than two digits would be, so 8% doesn't fill the icon, and
+    // small enough to leave the controller at least 4 px.
+    let gap = (size / 16).max(1);
+    let mut u = (size / units_w).min(size / 7).max(1);
+    while u > 1 && size < 5 * u + gap + 4 {
+        u -= 1;
+    }
+    let pad_h = size - 5 * u - gap;
+    draw_controller(c, size, pad_h, col);
+
+    let x0 = ((size.saturating_sub(units_w * u)) / 2 * SS) as f32;
+    let y0 = ((pad_h + gap) * SS) as f32;
+    let u = (u * SS) as f32;
+    for (i, g) in glyphs.iter().enumerate() {
+        let gx = x0 + i as f32 * 4.0 * u;
+        for (row, bits) in g.iter().enumerate() {
+            for col_i in 0..3u8 {
+                if bits & (0b100 >> col_i) != 0 {
+                    let x = gx + col_i as f32 * u;
+                    let y = y0 + row as f32 * u;
+                    round_rect(c, x, y, x + u, y + u, 0.0, col);
+                }
+            }
+        }
+    }
+}
+
+/// Body with two grips in the box at (x0, y0), size w by h, in supersampled pixels.
+fn controller_shape(c: &mut Canvas, x0: f32, y0: f32, w: f32, h: f32, col: Rgba) {
+    round_rect(c, x0, y0, x0 + w, y0 + h * 0.55, h * 0.27, col);
+    round_rect(c, x0, y0 + h * 0.25, x0 + w * 0.34, y0 + h, w * 0.16, col);
+    round_rect(c, x0 + w * 0.66, y0 + h * 0.25, x0 + w, y0 + h, w * 0.16, col);
+}
+
+/// Controller silhouette centred in the top `h` pixels, for the number style.
+fn draw_controller(c: &mut Canvas, size: u32, h: u32, col: Rgba) {
+    let hh = (h * SS) as f32;
+    let w = (hh * 2.2).min((size * SS) as f32);
+    let x0 = ((size * SS) as f32 - w) / 2.0;
+    controller_shape(c, x0, 0.0, w, hh, col);
+    // Thumbstick holes only where there are pixels to show them.
+    if h >= 8 {
+        let r = hh * 0.11;
+        let clear = Rgba(0, 0, 0, 0);
+        for cx in [x0 + w * 0.27, x0 + w * 0.73] {
+            round_rect(c, cx - r, hh * 0.32 - r, cx + r, hh * 0.32 + r, r, clear);
+        }
+    }
+}
+
+const GREEN: Rgba = Rgba(0x40, 0xD0, 0x6B, 0xFF);
+const AMBER: Rgba = Rgba(0xF5, 0xA6, 0x23, 0xFF);
+const RED: Rgba = Rgba(0xE8, 0x11, 0x23, 0xFF);
+const CLEAR: Rgba = Rgba(0, 0, 0, 0);
+
+/// A solid controller as a progress bar: charged part in colour from the left,
+/// the rest in a faint version of `ink`. Green, amber at 20% or below, red at
+/// 10% or below, green while charging.
+fn draw_controller_gauge(c: &mut Canvas, size: u32, fill: Option<u8>, charging: bool, ink: Rgba) {
+    let f = (size * SS) as f32;
+    // Full width; the height leaves room for the grips to read as grips.
+    let (w, h) = (f, f * 0.8);
+    let (x0, y0) = (0.0, (f - h) / 2.0);
+    let track = Rgba(ink.0, ink.1, ink.2, 0x60);
+    controller_shape(c, x0, y0, w, h, track);
+
+    if let Some(pct) = fill {
+        let col = match pct {
+            _ if charging => GREEN,
+            0..=10 => RED,
+            11..=20 => AMBER,
+            _ => GREEN,
+        };
+        // The same shape, kept only left of the charge line.
+        let mut t = Canvas::new(c.w, c.h);
+        controller_shape(&mut t, x0, y0, w, h, col);
+        let line = ((w * pct.min(100) as f32 / 100.0) as u32).min(c.w);
+        for y in 0..c.h {
+            for x in 0..line {
+                let p = t.px[(y * c.w + x) as usize];
+                if p.3 > 0 {
+                    c.put(x, y, p);
+                }
+            }
+        }
+    }
+
+    // Thumbstick holes make the blob read as a controller.
+    let r = h * 0.1;
+    for cx in [x0 + w * 0.27, x0 + w * 0.73] {
+        let cy = y0 + h * 0.3;
+        round_rect(c, cx - r, cy - r, cx + r, cy + r, r, CLEAR);
+    }
+
+    if charging {
+        let bh = h * 0.7;
+        let bw = bh * 0.66;
+        let (bx, by) = (x0 + w * 0.5 - bw * 0.5, y0 + h * 0.42 - bh * 0.5);
+        let halo = f * 0.04;
+        polygon(c, &bolt_points(bx - halo, by - halo, bw + halo * 2.0, bh + halo * 2.0), CLEAR);
+        polygon(c, &bolt_points(bx, by, bw, bh), ink);
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -112,92 +246,29 @@ pub fn render(spec: IconSpec) -> Option<HICON> {
 
 fn rasterize(spec: IconSpec) -> (Vec<u8>, u32) {
     let s = spec.size.max(8);
-    let n = s * SS;
-    let mut c = Canvas::new(n, n);
-
-    let f = n as f32;
-    let clear = Rgba(0, 0, 0, 0);
+    let mut c = Canvas::new(s * SS, s * SS);
     let ink = if spec.light_taskbar {
         Rgba(0x1A, 0x1A, 0x1A, 0xFF)
     } else {
         Rgba(0xFF, 0xFF, 0xFF, 0xFF)
     };
-    let low = Rgba(0xE8, 0x11, 0x23, 0xFF);
-    let level = spec.fill.unwrap_or(0);
-    let body_col = if spec.fill.is_some() && level <= 10 && !spec.charging {
-        low
-    } else {
-        ink
-    };
 
-    let stroke = (f * 0.055).max(1.0);
-    let bx0 = f * 0.055;
-    let bx1 = f * 0.80;
-    let by0 = f * 0.29;
-    let by1 = f * 0.71;
-    let radius = f * 0.07;
-
-    // Body outline: fill, then punch the inside back out.
-    round_rect(&mut c, bx0, by0, bx1, by1, radius, body_col);
-    round_rect(
-        &mut c,
-        bx0 + stroke,
-        by0 + stroke,
-        bx1 - stroke,
-        by1 - stroke,
-        (radius - stroke * 0.5).max(0.0),
-        clear,
-    );
-
-    round_rect(
-        &mut c,
-        bx1 + f * 0.02,
-        f * 0.42,
-        f * 0.925,
-        f * 0.58,
-        f * 0.03,
-        body_col,
-    );
-
-    let gap = stroke * 0.7;
-    let ix0 = bx0 + stroke + gap;
-    let ix1 = bx1 - stroke - gap;
-    let iy0 = by0 + stroke + gap;
-    let iy1 = by1 - stroke - gap;
-    if let Some(pct) = spec.fill {
-        let frac = (pct as f32 / 100.0).clamp(0.0, 1.0);
-        if frac > 0.005 {
-            let w = (ix1 - ix0) * frac;
-            round_rect(&mut c, ix0, iy0, ix0 + w, iy1, f * 0.02, body_col);
+    match spec.style {
+        Style::Number => {
+            let glyphs: Vec<[u8; 5]> = match spec.fill {
+                Some(v) => v.to_string().bytes().map(|b| DIGITS[(b - b'0') as usize]).collect(),
+                None => vec![DASH, DASH],
+            };
+            // Green while charging, since the number alone can't show the bolt.
+            let col = match spec.fill {
+                _ if spec.charging => GREEN,
+                Some(0..=10) => RED,
+                _ => ink,
+            };
+            draw_controller_and_number(&mut c, s, &glyphs, col);
         }
-    } else {
-        // No reading: a centred dash, distinct from empty.
-        let cy = (iy0 + iy1) * 0.5;
-        round_rect(
-            &mut c,
-            ix0 + (ix1 - ix0) * 0.28,
-            cy - stroke * 0.5,
-            ix1 - (ix1 - ix0) * 0.28,
-            cy + stroke * 0.5,
-            stroke * 0.5,
-            body_col,
-        );
+        Style::Controller => draw_controller_gauge(&mut c, s, spec.fill, spec.charging, ink),
     }
-
-    if spec.charging {
-        let bh = (iy1 - iy0) * 1.2;
-        let bw = bh * 0.66;
-        let bxc = (ix0 + ix1) * 0.5 - bw * 0.5;
-        let byc = (iy0 + iy1) * 0.5 - bh * 0.5;
-        let halo = stroke * 0.45;
-        polygon(
-            &mut c,
-            &bolt_points(bxc - halo, byc - halo, bw + halo * 2.0, bh + halo * 2.0),
-            clear,
-        );
-        polygon(&mut c, &bolt_points(bxc, byc, bw, bh), ink);
-    }
-
     (downsample(&c, s), s)
 }
 
@@ -280,57 +351,61 @@ mod tests {
 
     #[test]
     fn dump_icon_sheet() {
-        let size = 32u32;
-        let states: Vec<IconSpec> = [
-            (Some(100u8), false),
-            (Some(72), false),
-            (Some(72), true),
-            (Some(35), false),
-            (Some(8), false),
-            (Some(8), true),
-            (None, false),
-        ]
-        .iter()
-        .map(|(fill, charging)| IconSpec {
-            size,
-            fill: *fill,
-            charging: *charging,
-            light_taskbar: false,
-        })
-        .collect();
+        for size in [32u32, 16] {
+            let states: Vec<IconSpec> = [
+                (Some(100u8), false),
+                (Some(72), false),
+                (Some(72), true),
+                (Some(35), false),
+                (Some(8), false),
+                (Some(8), true),
+                (None, false),
+            ]
+            .iter()
+            .flat_map(|(fill, charging)| {
+                [Style::Controller, Style::Number].map(|style| IconSpec {
+                    size,
+                    fill: *fill,
+                    charging: *charging,
+                    light_taskbar: false,
+                    style,
+                })
+            })
+            .collect();
 
-        let cell = size + 8;
-        let sheet_w = cell * states.len() as u32;
-        let sheet_h = cell;
-        // Bottom-up BGRA, mid-grey so both light and dark ink show.
-        let mut sheet = vec![0u8; (sheet_w * sheet_h * 4) as usize];
-        for i in (0..sheet.len()).step_by(4) {
-            sheet[i] = 0x28;
-            sheet[i + 1] = 0x28;
-            sheet[i + 2] = 0x28;
-            sheet[i + 3] = 0xFF;
-        }
-        for (i, spec) in states.iter().enumerate() {
-            let (bits, s) = rasterize(*spec);
-            for y in 0..s {
-                for x in 0..s {
-                    let src = ((y * s + x) * 4) as usize;
-                    let a = bits[src + 3] as u32;
-                    let dx = i as u32 * cell + 4 + x;
-                    let dy = 4 + y;
-                    let dst = ((dy * sheet_w + dx) * 4) as usize;
-                    for ch in 0..3 {
-                        let s0 = bits[src + ch] as u32; // premultiplied
-                        let d0 = sheet[dst + ch] as u32;
-                        sheet[dst + ch] = (s0 + d0 * (255 - a) / 255).min(255) as u8;
+            let cell = size + 8;
+            let sheet_w = cell * states.len() as u32;
+            let sheet_h = cell;
+            // Bottom-up BGRA, mid-grey so both light and dark ink show.
+            let mut sheet = vec![0u8; (sheet_w * sheet_h * 4) as usize];
+            for i in (0..sheet.len()).step_by(4) {
+                sheet[i] = 0x28;
+                sheet[i + 1] = 0x28;
+                sheet[i + 2] = 0x28;
+                sheet[i + 3] = 0xFF;
+            }
+            for (i, spec) in states.iter().enumerate() {
+                let (bits, s) = rasterize(*spec);
+                for y in 0..s {
+                    for x in 0..s {
+                        let src = ((y * s + x) * 4) as usize;
+                        let a = bits[src + 3] as u32;
+                        let dx = i as u32 * cell + 4 + x;
+                        let dy = 4 + y;
+                        let dst = ((dy * sheet_w + dx) * 4) as usize;
+                        for ch in 0..3 {
+                            let s0 = bits[src + ch] as u32; // premultiplied
+                            let d0 = sheet[dst + ch] as u32;
+                            sheet[dst + ch] = (s0 + d0 * (255 - a) / 255).min(255) as u8;
+                        }
                     }
                 }
             }
-        }
 
-        let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/icons.bmp");
-        write_bmp(&out, &sheet, sheet_w, sheet_h);
-        assert!(out.exists());
+            let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("target/icons-{size}.bmp"));
+            write_bmp(&out, &sheet, sheet_w, sheet_h);
+            assert!(out.exists());
+        }
     }
 
     #[test]
@@ -346,6 +421,7 @@ mod tests {
                     fill: Some(100),
                     charging: false,
                     light_taskbar: false,
+                    style: Style::Controller,
                 });
                 assert_eq!(s, size);
                 let mut out = bits.clone();
