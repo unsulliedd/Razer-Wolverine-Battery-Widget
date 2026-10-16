@@ -24,6 +24,21 @@ fn path() -> Option<PathBuf> {
     Some(dir.join("state.json"))
 }
 
+/// The file exists = read PC-mode battery while the panel is closed. Off by default.
+fn background_flag() -> Option<PathBuf> {
+    Some(path()?.with_file_name("read-in-background"))
+}
+
+pub fn background_enabled() -> bool {
+    background_flag().is_some_and(|p| p.exists())
+}
+
+pub fn set_background(on: bool) {
+    if let Some(p) = background_flag() {
+        let _ = if on { std::fs::write(&p, b"") } else { std::fs::remove_file(&p) };
+    }
+}
+
 fn secs(t: SystemTime) -> u64 {
     t.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
 }

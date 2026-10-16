@@ -179,6 +179,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) ->
         }
         WM_TIMER if w.0 == TIMER_TICK => {
             gip::reconcile_connected();
+            // PC mode can be read from the background; opt-in from settings.
+            if store::background_enabled() {
+                hid::request_refresh();
+            }
             ensure_tray(hwnd);
             if let Some(t) = tray_mut() {
                 t.update(&tooltip());
@@ -289,6 +293,10 @@ unsafe extern "system" fn flyout_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM
                     }
                     Some(flyout::ROW_AUTOSTART) => {
                         theme::set_autostart(!theme::autostart_enabled());
+                        let _ = InvalidateRect(hwnd, None, false);
+                    }
+                    Some(flyout::ROW_BACKGROUND) => {
+                        store::set_background(!store::background_enabled());
                         let _ = InvalidateRect(hwnd, None, false);
                     }
                     Some(flyout::ROW_QUIT) => {

@@ -101,8 +101,9 @@ pub enum Page {
 
 pub const ROW_REFRESH: usize = 0;
 pub const ROW_AUTOSTART: usize = 1;
-pub const ROW_QUIT: usize = 2;
-const ROW_COUNT: usize = 3;
+pub const ROW_BACKGROUND: usize = 2;
+pub const ROW_QUIT: usize = 3;
+const ROW_COUNT: usize = 4;
 const ROW_DIP: i32 = 40;
 const HEADER_DIP: i32 = 40;
 const SETTINGS_DIP: i32 = PAD + HEADER_DIP + ROW_COUNT as i32 * ROW_DIP + PAD;
@@ -816,6 +817,7 @@ fn draw_settings(g: &Painter, p: &Palette, cw: i32) {
         let label = match i {
             ROW_REFRESH => "Refresh now",
             ROW_AUTOSTART => "Start with Windows",
+            ROW_BACKGROUND => "Read in background (PC mode)",
             _ => "Quit",
         };
         g.text(
@@ -826,7 +828,12 @@ fn draw_settings(g: &Painter, p: &Palette, cw: i32) {
             p.text,
             DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX,
         );
-        if i == ROW_AUTOSTART && crate::theme::autostart_enabled() {
+        let checked = match i {
+            ROW_AUTOSTART => crate::theme::autostart_enabled(),
+            ROW_BACKGROUND => crate::store::background_enabled(),
+            _ => false,
+        };
+        if checked {
             g.icon(
                 GLYPH_CHECK,
                 RECT { left: right - g.s(GL_LARGE), top: ry, right, bottom: rb },
