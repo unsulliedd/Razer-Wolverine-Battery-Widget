@@ -1,6 +1,8 @@
 
 /// 60 bytes on this device; Razer's desktop peripherals use 90.
 pub const REPORT_LEN: usize = 60;
+/// PC mode exposes the same protocol as a 90-byte HID feature report.
+pub const HID_REPORT_LEN: usize = 90;
 
 pub const GIP_REQUEST_ID: u8 = 0x0F;
 pub const GIP_REPLY_ID: u8 = 0x10;
@@ -13,21 +15,26 @@ pub const CLASS_POWER: u8 = 0x07;
 pub const CMD_BATTERY: u8 = 0x80;
 pub const CMD_CHARGING: u8 = 0x84;
 
-/// XOR over bytes 2..58 of the report.
+/// XOR over bytes 2..len-2 of the report; the checksum sits at len-2.
 fn checksum(report: &[u8]) -> u8 {
-    report[2..REPORT_LEN - 2].iter().fold(0u8, |a, b| a ^ b)
+    report[2..report.len() - 2].iter().fold(0u8, |a, b| a ^ b)
 }
 
 /// Command ids without the high bit set are writes on this device, so only the
 /// two power reads are exposed.
-fn build(cmd_class: u8, cmd_id: u8) -> [u8; REPORT_LEN] {
-    let mut r = [0u8; REPORT_LEN];
+fn build<const N: usize>(cmd_class: u8, cmd_id: u8) -> [u8; N] {
+    // Last line of defence: a write never gets built, let alone sent.
+    assert!(
+        cmd_class == CLASS_POWER && (cmd_id == CMD_BATTERY || cmd_id == CMD_CHARGING),
+        "only the two power reads may be sent"
+    );
+    let mut r = [0u8; N];
     r[0] = STATUS_REQUEST;
     r[1] = TRANSACTION_ID;
     r[5] = 0x02; // data size
     r[6] = cmd_class;
     r[7] = cmd_id;
-    r[REPORT_LEN - 2] = checksum(&r);
+    r[N - 2] = checksum(&r);
     r
 }
 
@@ -37,6 +44,11 @@ pub fn battery_request() -> [u8; REPORT_LEN] {
 
 pub fn charging_request() -> [u8; REPORT_LEN] {
     build(CLASS_POWER, CMD_CHARGING)
+}
+
+/// `CMD_BATTERY` or `CMD_CHARGING` only, as a PC-mode HID report.
+pub fn hid_request(cmd_id: u8) -> [u8; HID_REPORT_LEN] {
+    build(CLASS_POWER, cmd_id)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,11 +69,15 @@ pub fn parse_reply(message_id: u8, buf: &[u8]) -> Option<PowerReply> {
     if buf.len() < REPORT_LEN {
         return None;
     }
-    let report = &buf[..REPORT_LEN];
+    parse_report(&buf[..REPORT_LEN])
+}
+
+/// A whole report of either length, without the HID report id byte.
+pub fn parse_report(report: &[u8]) -> Option<PowerReply> {
     if report[0] != STATUS_OK || report[1] != TRANSACTION_ID {
         return None;
     }
-    if checksum(report) != report[REPORT_LEN - 2] {
+    if checksum(report) != report[report.len() - 2] {
         return None;
     }
     if report[6] != CLASS_POWER {
@@ -135,6 +151,26 @@ mod tests {
             parse_reply(GIP_REPLY_ID, &r),
             Some(PowerReply::Charging(true))
         );
+    }
+
+    #[test]
+    fn hid_request_and_captured_pc_mode_reply() {
+        let req = hid_request(CMD_BATTERY);
+        assert_eq!(&req[..8], &[0x00, 0x1F, 0x00, 0x00, 0x00, 0x02, 0x07, 0x80]);
+        assert_eq!(req[HID_REPORT_LEN - 2], 0x85);
+
+        // Captured in PC mode: value 0xC4, checksum 0x41 at byte 88.
+        let mut r = report("02 1F 00 00 00 02 07 80 00 C4", 0x00);
+        r.resize(HID_REPORT_LEN, 0);
+        r[REPORT_LEN - 2] = 0;
+        r[HID_REPORT_LEN - 2] = 0x41;
+        assert_eq!(parse_report(&r), Some(PowerReply::Battery(0xC4)));
+    }
+
+    #[test]
+    #[should_panic(expected = "only the two power reads")]
+    fn refuses_to_build_anything_but_the_two_reads() {
+        hid_request(0x04); // high bit clear: a write on this device
     }
 
     #[test]

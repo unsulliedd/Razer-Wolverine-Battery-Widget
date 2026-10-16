@@ -3,6 +3,7 @@
 
 mod flyout;
 mod gip;
+mod hid;
 mod icon;
 mod link;
 mod protocol;
@@ -164,6 +165,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) ->
         }
         WM_TIMER if w.0 == TIMER_POLL => {
             gip::request_refresh();
+            hid::request_refresh();
             LRESULT(0)
         }
         WM_TIMER if w.0 == TIMER_TRAY => {
@@ -280,6 +282,7 @@ unsafe extern "system" fn flyout_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM
                 match flyout::settings_row_at(hwnd, x, y) {
                     Some(flyout::ROW_REFRESH) => {
                         gip::request_refresh();
+                        hid::request_refresh();
                         flyout::set_page(flyout::Page::Battery);
                         flyout::resize_to_content(hwnd);
                         let _ = InvalidateRect(hwnd, None, false);
@@ -422,6 +425,7 @@ fn main() {
         ensure_tray(hwnd);
 
         gip::register();
+        hid::request_refresh();
 
         SetTimer(hwnd, TIMER_TICK, 30_000, None);
         SetTimer(hwnd, TIMER_SETTLE, 3_000, None);
